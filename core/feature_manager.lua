@@ -4,16 +4,16 @@ local M = {}
 M.LoadedFeatures = {}
 
 local FEATURE_URLS = {
-    AutoFish           = "https://raw.githubusercontent.com/hailazra/devlogic/refs/heads/main/Fish-It/autofish.lua", 
-    AutoSellFish       = "https://raw.githubusercontent.com/hailazra/devlogic/refs/heads/main/Fish-It/autosellfish.lua",
-    AutoTeleportIsland = "https://raw.githubusercontent.com/hailazra/devlogic/refs/heads/main/Fish-It/autoteleportisland.lua",
-    FishWebhook        = "https://raw.githubusercontent.com/hailazra/devlogic/refs/heads/main/Fish-It/fishwebhook.lua",
-    AutoBuyWeather     = "https://raw.githubusercontent.com/hailazra/devlogic/refs/heads/main/Fish-It/autobuyweather.lua",
-    AutoBuyBait        = "https://raw.githubusercontent.com/hailazra/devlogic/refs/heads/main/Fish-It/autobuybait.lua",
-    AutoBuyRod         = "https://raw.githubusercontent.com/hailazra/devlogic/refs/heads/main/Fish-It/autobuyrod.lua",
-    AutoTeleportEvent  = "https://raw.githubusercontent.com/hailazra/devlogic/refs/heads/main/Fish-It/autoteleportevent.lua",
-    AutoGearOxyRadar   = "https://raw.githubusercontent.com/hailazra/devlogic/refs/heads/main/Fish-It/autogearoxyradar.lua",
-    AntiAfk            = "https://raw.githubusercontent.com/hailazra/devlogic/refs/heads/main/Fish-It/antiafk.lua"
+    AutoFish           = "https://raw.githubusercontent.com/tpzmous/ucokkoplo_project/refs/heads/main/Fitur/antiafk.lua", 
+    AutoSellFish       = "https://raw.githubusercontent.com/tpzmous/ucokkoplo_project/refs/heads/main/Fitur/autosellfish.lua",
+    AutoTeleportIsland = "https://raw.githubusercontent.com/tpzmous/ucokkoplo_project/refs/heads/main/Fitur/autoteleportisland.lua",
+    FishWebhook        = "https://raw.githubusercontent.com/tpzmous/ucokkoplo_project/refs/heads/main/Fitur/fishwebhook.lua",
+    AutoBuyWeather     = "https://raw.githubusercontent.com/tpzmous/ucokkoplo_project/refs/heads/main/Fitur/autobuyweather.lua",
+    AutoBuyBait        = "https://raw.githubusercontent.com/tpzmous/ucokkoplo_project/refs/heads/main/Fitur/autobuybait.lua",
+    AutoBuyRod         = "https://raw.githubusercontent.com/tpzmous/ucokkoplo_project/refs/heads/main/Fitur/autobuyrod.lua",
+    AutoTeleportEvent  = "https://raw.githubusercontent.com/tpzmous/ucokkoplo_project/refs/heads/main/Fitur/autoteleportevent.lua",
+    AutoGearOxyRadar   = "https://raw.githubusercontent.com/tpzmous/ucokkoplo_project/refs/heads/main/Fitur/autogearoxyradar.lua",
+    AntiAfk            = "https://raw.githubusercontent.com/tpzmous/ucokkoplo_project/refs/heads/main/Fitur/antiafk.lua"
 }
 
 local function notify(title, content, icon, dur)
