@@ -1,5 +1,5 @@
 --========================================================
--- Feature: AutoTeleportEvent (Fixed v3)
+-- Feature: AutoTeleportEvent (Fixed v3) + Hover BodyPosition
 --========================================================
 
 local AutoTeleportEvent = {}
@@ -31,6 +31,9 @@ local lastKnownActiveProps  = {}     -- track active props for cleanup detection
 -- Cache nama event valid (dari ReplicatedStorage.Events)
 local validEventName = {}            -- set of normName
 
+-- Hover BodyPosition name
+local HOVER_BP_NAME = "AutoTeleport_HoverBP"
+
 -- ===== Utils =====
 local function normName(s)
     s = string.lower(s or "")
@@ -60,6 +63,32 @@ local function setCFrameSafely(hrp, targetPos, keepLookAt)
     hrp.AssemblyLinearVelocity = Vector3.new()
     hrp.AssemblyAngularVelocity = Vector3.new()
     hrp.CFrame = CFrame.lookAt(targetPos, Vector3.new(look.X, targetPos.Y, look.Z))
+end
+
+-- ===== Hover BodyPosition helpers =====
+local function ensureHoverBP(hrp)
+    if not hrp then return nil end
+    local bp = hrp:FindFirstChild(HOVER_BP_NAME)
+    if bp and bp:IsA("BodyPosition") then
+        return bp
+    end
+    -- Create BodyPosition
+    bp = Instance.new("BodyPosition")
+    bp.Name = HOVER_BP_NAME
+    -- Force should be large enough to counter gravity and small movements
+    bp.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    bp.P = 3e4   -- spring constant (higher -> stiffer)
+    bp.D = 1e3   -- damping
+    bp.Parent = hrp
+    return bp
+end
+
+local function removeHoverBP(hrp)
+    if not hrp then return end
+    local bp = hrp:FindFirstChild(HOVER_BP_NAME)
+    if bp then
+        bp:Destroy()
+    end
 end
 
 -- ===== Save Position Before First Teleport =====
@@ -145,13 +174,23 @@ end
 
 -- ===== Match terhadap pilihan user =====
 local function matchesSelection(nameKey)
-    if #selectedPriorityList == 0 then return true end -- user tidak memilih apa-apa -> semua boleh
-    -- "contains" match dua arah supaya toleran variasi nama
+    -- Jika user tidak memberikan priorityList dan set kosong -> semua diizinkan
+    if #selectedPriorityList == 0 and next(selectedSet) == nil then return true end
+
+    -- cek selectedSet (fast)
+    for selKey, _ in pairs(selectedSet) do
+        if nameKey:find(selKey, 1, true) or selKey:find(nameKey, 1, true) then
+            return true
+        end
+    end
+
+    -- cek priority list (ordered)
     for _, selKey in ipairs(selectedPriorityList) do
         if nameKey:find(selKey, 1, true) or selKey:find(nameKey, 1, true) then
             return true
         end
     end
+
     return false
 end
 
@@ -171,7 +210,7 @@ local function chooseBestActiveEvent()
 
     -- filter sesuai pilihan user jika ada
     local filtered = {}
-    if #selectedPriorityList > 0 then
+    if #selectedPriorityList > 0 or next(selectedSet) ~= nil then
         for _, a in ipairs(actives) do
             if matchesSelection(a.nameKey) then
                 table.insert(filtered, a)
@@ -199,14 +238,21 @@ end
 
 -- ===== Teleport / Return =====
 local function teleportToTarget(target)
-    local _, hrp = ensureCharacter()
+    local char, hrp, hum = ensureCharacter()
     if not hrp then return false, "NO_HRP" end
     
     -- Save position before first teleport
     saveCurrentPosition()
     
     local tpPos = target.pos + Vector3.new(0, hoverHeight, 0)
+    -- Instant teleport once
     setCFrameSafely(hrp, tpPos)
+    -- Ensure we have a BodyPosition to maintain hover smoothly
+    local bp = ensureHoverBP(hrp)
+    if bp then
+        bp.Position = tpPos
+    end
+
     print("[AutoTeleportEvent] Teleported to:", target.name, "at", tostring(target.pos))
     return true
 end
@@ -217,29 +263,51 @@ local function restoreToSavedPosition()
         return 
     end
     
-    local _, hrp = ensureCharacter()
+    local char, hrp, hum = ensureCharacter()
     if hrp then
+        -- remove any hover BP so player regains normal physics
+        removeHoverBP(hrp)
         setCFrameSafely(hrp, savedPosition.Position, savedPosition.Position + savedPosition.LookVector)
+        -- reset velocities just in case
+        hrp.AssemblyLinearVelocity = Vector3.new()
+        hrp.AssemblyAngularVelocity = Vector3.new()
         print("[AutoTeleportEvent] Restored to saved position:", tostring(savedPosition.Position))
     end
 end
 
 local function maintainHover()
-    local _, hrp = ensureCharacter()
+    local char, hrp, hum = ensureCharacter()
     if hrp and currentTarget then
         -- Check if target still exists
         if not currentTarget.model or not currentTarget.model.Parent then
             print("[AutoTeleportEvent] Current target no longer exists, clearing")
             currentTarget = nil
+            -- remove BP
+            removeHoverBP(hrp)
             return
         end
         
         local desired = currentTarget.pos + Vector3.new(0, hoverHeight, 0)
-        if (hrp.Position - desired).Magnitude > 1.2 then
-            setCFrameSafely(hrp, desired)
+        -- Use BodyPosition to maintain hover smoothly
+        local bp = ensureHoverBP(hrp)
+        if bp then
+            bp.Position = desired
         else
+            -- Fallback: if BP couldn't be created, do occasional setCFrame
+            if (hrp.Position - desired).Magnitude > 5 then
+                setCFrameSafely(hrp, desired)
+            end
+        end
+
+        -- Small velocity reset when close to desired to avoid micro jitter
+        if (hrp.Position - desired).Magnitude <= 1.2 then
             hrp.AssemblyLinearVelocity = Vector3.new()
             hrp.AssemblyAngularVelocity = Vector3.new()
+        end
+    else
+        -- No current target -> ensure no hover BP remains
+        if hrp then
+            removeHoverBP(hrp)
         end
     end
 end
@@ -261,6 +329,9 @@ local function updateActivePropsTracking()
             if currentTarget and currentTarget.propsName == propsName then
                 print("[AutoTeleportEvent] Current target props removed, clearing target")
                 currentTarget = nil
+                -- also remove BP from character
+                local _, hrp = ensureCharacter()
+                if hrp then removeHoverBP(hrp) end
             end
         end
     end
@@ -276,7 +347,7 @@ local function startLoop()
         if not running then return end
         local now = os.clock()
         
-        -- Maintain hover more frequently
+        -- Maintain hover more frequently (every heartbeat)
         maintainHover()
         
         if now - lastTick < 0.3 then -- throttle main logic
@@ -299,7 +370,7 @@ local function startLoop()
             return
         end
 
-        -- Check if we need to switch targets
+        -- Check if we need to switch targets (compare by instance and propsName)
         if (not currentTarget) or (currentTarget.model ~= best.model) or (currentTarget.propsName ~= best.propsName) then
             print("[AutoTeleportEvent] Switching to new target:", best.name)
             teleportToTarget(best)
@@ -334,6 +405,9 @@ local function setupWorkspaceMonitoring()
                 if currentTarget and currentTarget.propsName == child.Name then
                     print("[AutoTeleportEvent] Current target props removed")
                     currentTarget = nil
+                    -- remove hover BP
+                    local _, hrp = ensureCharacter()
+                    if hrp then removeHoverBP(hrp) end
                 end
             end
         end
@@ -418,6 +492,10 @@ function AutoTeleportEvent:Stop()
     -- Always restore to saved position when stopping
     if savedPosition then
         restoreToSavedPosition()
+    else
+        -- remove BP if any
+        local _, hrp = ensureCharacter()
+        if hrp then removeHoverBP(hrp) end
     end
     
     currentTarget = nil
@@ -479,7 +557,12 @@ function AutoTeleportEvent:SetHoverHeight(h)
             local _, hrp = ensureCharacter()
             if hrp then
                 local desired = currentTarget.pos + Vector3.new(0, hoverHeight, 0)
-                setCFrameSafely(hrp, desired)
+                local bp = ensureHoverBP(hrp)
+                if bp then
+                    bp.Position = desired
+                else
+                    setCFrameSafely(hrp, desired)
+                end
             end
         end
         return true
