@@ -1,5 +1,5 @@
 --========================================================
--- Feature: AutoTeleportEvent + AutoFly (Fixed v5)
+-- Feature: AutoTeleportEvent + AutoFly (Fixed vFinal)
 --========================================================
 
 local AutoTeleportEvent = {}
@@ -52,26 +52,34 @@ end
 
 local function ensureCharacter()
     local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-    local hrp  = char:FindFirstChild("HumanoidRootPart") or waitChild(char, "HumanoidRootPart", 5)
+    local hrp  = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("HumanoidRootPart") or waitChild(char, "HumanoidRootPart", 5)
     local hum  = char:FindFirstChildOfClass("Humanoid")
     return char, hrp, hum
 end
 
 local function setCFrameSafely(hrp, targetPos, keepLookAt)
+    if not hrp then return end
     local look = keepLookAt or (hrp.CFrame.LookVector + hrp.Position)
-    hrp.AssemblyLinearVelocity = Vector3.new()
-    hrp.AssemblyAngularVelocity = Vector3.new()
+    -- reset velocities to avoid physics glitches
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.new()
+        hrp.AssemblyAngularVelocity = Vector3.new()
+    end)
     hrp.CFrame = CFrame.lookAt(targetPos, Vector3.new(look.X, targetPos.Y, look.Z))
 end
 
+-- ===== Auto Fly Implementation =====
 local function startFly()
     if flying then return end
     flying = true
-    local char, hrp = ensureCharacter()
-    if not hrp then return end
+    -- connect heartbeat; each tick check character existence and keys
     flyConn = RunService.Heartbeat:Connect(function()
-        if not Character or not Character:FindFirstChild("HumanoidRootPart") then return end
-        local hrp = Character.HumanoidRootPart
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+
+        -- build directional vector from user input
         local dir = Vector3.new()
         if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + Vector3.new(0,0,-1) end
         if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir + Vector3.new(0,0,1) end
@@ -79,17 +87,27 @@ local function startFly()
         if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + Vector3.new(1,0,0) end
         if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0,1,0) end
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir = dir + Vector3.new(0,-1,0) end
-        hrp.Velocity = (hrp.CFrame.LookVector * dir.Z + hrp.CFrame.RightVector * dir.X + Vector3.new(0,dir.Y,0)) * 60
+
+        -- scale velocity for smooth flight; tweak multiplier if needed
+        local velocity = (hrp.CFrame.LookVector * dir.Z + hrp.CFrame.RightVector * dir.X + Vector3.new(0, dir.Y, 0)) * 60
+        -- apply velocity safely
+        pcall(function() hrp.Velocity = velocity end)
     end)
 end
 
 local function stopFly()
     if not flying then return end
     flying = false
-    if flyConn then flyConn:Disconnect(); flyConn = nil end
-    local char, hrp = ensureCharacter()
-    if hrp then
-        hrp.Velocity = Vector3.new(0,0,0)
+    if flyConn then
+        flyConn:Disconnect()
+        flyConn = nil
+    end
+    local char = LocalPlayer.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            pcall(function() hrp.Velocity = Vector3.new(0,0,0) end)
+        end
     end
 end
 
@@ -235,7 +253,10 @@ local function teleportToTarget(target)
     saveCurrentPosition()
     local tpPos = target.pos + Vector3.new(0, hoverHeight, 0)
     setCFrameSafely(hrp, tpPos)
-    startFly() -- Auto fly triggered immediately after teleport
+    -- start auto-fly after teleport; small delay avoids physics glitches
+    task.delay(0.05, function()
+        startFly()
+    end)
     print("[AutoTeleportEvent] Teleported to:", target.name, "at", tostring(target.pos))
     return true
 end
@@ -253,8 +274,10 @@ local function maintainHover()
         if (hrp.Position - desired).Magnitude > 1.2 then
             setCFrameSafely(hrp, desired)
         else
-            hrp.AssemblyLinearVelocity = Vector3.new()
-            hrp.AssemblyAngularVelocity = Vector3.new()
+            pcall(function()
+                hrp.AssemblyLinearVelocity = Vector3.new()
+                hrp.AssemblyAngularVelocity = Vector3.new()
+            end)
         end
     end
 end
@@ -266,12 +289,37 @@ local function startLoop()
     hbConn = RunService.Heartbeat:Connect(function()
         if not running then return end
         local now = os.clock()
+
+        -- keep hovering smooth at higher frequency
         maintainHover()
+
         if now - lastTick < 0.3 then return end
         lastTick = now
 
-        local activeEvents = scanAllActiveProps()
+        updateActivePropsTracking = updateActivePropsTracking -- forward declare safe (keeps linter calm)
+        -- update tracking + choose best
+        local function _updateActivePropsTracking()
+            local newActiveProps = {}
+            local activeEvents = scanAllActiveProps()
+            for _, event in ipairs(activeEvents) do
+                newActiveProps[event.propsName] = true
+            end
+            for propsName, _ in pairs(lastKnownActiveProps) do
+                if not newActiveProps[propsName] then
+                    print("[AutoTeleportEvent] Props removed:", propsName)
+                    if currentTarget and currentTarget.propsName == propsName then
+                        print("[AutoTeleportEvent] Current target props removed, clearing target")
+                        currentTarget = nil
+                        stopFly()
+                    end
+                end
+            end
+            lastKnownActiveProps = newActiveProps
+        end
+
+        _updateActivePropsTracking()
         local best = chooseBestActiveEvent()
+
         if not best then
             if currentTarget then
                 print("[AutoTeleportEvent] No valid events found, clearing current target")
@@ -284,12 +332,16 @@ local function startLoop()
 
         local _, hrp = ensureCharacter()
         local targetPos = best.pos + Vector3.new(0, hoverHeight, 0)
-        if not currentTarget 
-           or currentTarget.model ~= best.model 
-           or currentTarget.propsName ~= best.propsName
-           or not isCloseEnough(hrp.Position, targetPos, 2) then
+
+        if (not currentTarget)
+           or (currentTarget.model ~= best.model)
+           or (currentTarget.propsName ~= best.propsName)
+           or (not hrp) or (not isCloseEnough(hrp.Position, targetPos, 2)) then
+
             print("[AutoTeleportEvent] Switching to new target:", best.name)
-            teleportToTarget(best)
+            pcall(function()
+                teleportToTarget(best)
+            end)
             currentTarget = best
         end
     end)
@@ -318,6 +370,12 @@ local function setupWorkspaceMonitoring()
             end
         end
     end)
+
+    workspaceConn = Workspace.DescendantAdded:Connect(function(desc)
+        if desc:IsA("Model") and desc.Parent and (desc.Parent.Name == "Props" or desc.Parent.Name:find("Props")) then
+            task.wait(0.1)
+        end
+    end)
 end
 
 -- ===== Lifecycle =====
@@ -326,12 +384,13 @@ function AutoTeleportEvent:Init(gui)
     indexEvents()
     if charConn then charConn:Disconnect() end
     charConn = LocalPlayer.CharacterAdded:Connect(function()
+        -- when respawn, clear saved pos so we re-save on first teleport
         savedPosition = nil
         if running and currentTarget then
             task.defer(function()
                 task.wait(0.5)
                 if currentTarget then
-                    teleportToTarget(currentTarget)
+                    pcall(function() teleportToTarget(currentTarget) end)
                 end
             end)
         end
@@ -349,18 +408,23 @@ function AutoTeleportEvent:Start(config)
             hoverHeight = math.clamp(config.hoverHeight, 5, 100)
         end
         if type(config.selectedEvents) ~= "nil" then
+            -- accept both array-order or set/dict
             self:SetSelectedEvents(config.selectedEvents)
         end
     end
     currentTarget = nil
     savedPosition = nil
     table.clear(lastKnownActiveProps)
+    indexEvents()
     local best = chooseBestActiveEvent()
     if best then
-        teleportToTarget(best)
+        pcall(function() teleportToTarget(best) end)
         currentTarget = best
+    else
+        print("[AutoTeleportEvent] No initial target found")
     end
     startLoop()
+    print("[AutoTeleportEvent] Started")
     return true
 end
 
@@ -369,10 +433,81 @@ function AutoTeleportEvent:Stop()
     running = false
     if hbConn then hbConn:Disconnect(); hbConn = nil end
     stopFly()
-    if savedPosition then restoreToSavedPosition() end
+    if savedPosition then
+        pcall(restoreToSavedPosition)
+    end
     currentTarget = nil
     table.clear(lastKnownActiveProps)
+    print("[AutoTeleportEvent] Stopped")
     return true
+end
+
+function AutoTeleportEvent:Cleanup()
+    self:Stop()
+    if charConn then charConn:Disconnect(); charConn = nil end
+    if propsAddedConn then propsAddedConn:Disconnect(); propsAddedConn = nil end
+    if propsRemovedConn then propsRemovedConn:Disconnect(); propsRemovedConn = nil end
+    if workspaceConn then workspaceConn:Disconnect(); workspaceConn = nil end
+    eventsFolder = nil
+    table.clear(validEventName)
+    table.clear(selectedPriorityList)
+    table.clear(selectedSet)
+    table.clear(lastKnownActiveProps)
+    savedPosition = nil
+    currentTarget = nil
+    stopFly()
+    print("[AutoTeleportEvent] Cleanup completed")
+    return true
+end
+
+-- ===== Setters =====
+function AutoTeleportEvent:SetSelectedEvents(selected)
+    table.clear(selectedPriorityList)
+    table.clear(selectedSet)
+    if type(selected) == "table" then
+        if #selected > 0 then
+            for _, v in ipairs(selected) do
+                local key = normName(v)
+                table.insert(selectedPriorityList, key)
+                selectedSet[key] = true
+            end
+            print("[AutoTeleportEvent] Priority events set:", table.concat(selectedPriorityList, ", "))
+        else
+            for k, on in pairs(selected) do
+                if on then
+                    local key = normName(k)
+                    selectedSet[key] = true
+                end
+            end
+        end
+    end
+    return true
+end
+
+function AutoTeleportEvent:SetHoverHeight(h)
+    if type(h) == "number" then
+        hoverHeight = math.clamp(h, 5, 100)
+        if running and currentTarget then
+            local _, hrp = ensureCharacter()
+            if hrp then
+                local desired = currentTarget.pos + Vector3.new(0, hoverHeight, 0)
+                setCFrameSafely(hrp, desired)
+            end
+        end
+        return true
+    end
+    return false
+end
+
+function AutoTeleportEvent:Status()
+    return {
+        running     = running,
+        hover       = hoverHeight,
+        hasSavedPos = savedPosition ~= nil,
+        target      = currentTarget and currentTarget.name or nil,
+        activeProps = lastKnownActiveProps,
+        flying      = flying
+    }
 end
 
 function AutoTeleportEvent.new()
