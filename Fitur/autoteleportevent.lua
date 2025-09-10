@@ -1,5 +1,5 @@
 --========================================================
--- Feature: AutoTeleportEvent (Fixed v3) + Hover BodyPosition
+-- Feature: AutoTeleportEvent (Fixed v3) + Hover BodyPosition + Smart Water Teleport
 --========================================================
 
 local AutoTeleportEvent = {}
@@ -89,6 +89,73 @@ local function removeHoverBP(hrp)
     if bp then
         bp:Destroy()
     end
+end
+
+-- ===== Smart water-finding helpers =====
+local function findBestWaterPosition(centerPos)
+    -- Parameters (tweakable)
+    local maxRadius = 30           -- cari hingga radius ini (studs)
+    local radii = {0, 2, 4, 6, 10, 15, 20, 30} -- radius steps (center first)
+    local samplesPerRadius = 8     -- berapa sample per lingkaran (8 -> setiap 45°)
+    local rayUp = 60               -- start Y di atas pivot
+    local rayDown = 200            -- panjang ray ke bawah
+    local best = nil
+    local bestDist = math.huge
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    -- blacklist karakter pemain supaya ray tidak kena character sendiri
+    local char = LocalPlayer.Character
+    if char then
+        params.FilterDescendantsInstances = {char}
+    else
+        params.FilterDescendantsInstances = {}
+    end
+    params.IgnoreWater = false
+
+    for _, r in ipairs(radii) do
+        if r > maxRadius then break end
+        local stepCount = (r == 0) and 1 or samplesPerRadius
+        for i = 0, stepCount - 1 do
+            local offset = Vector3.new(0,0,0)
+            if r == 0 then
+                offset = Vector3.new(0,0,0)
+            else
+                local theta = (i / stepCount) * math.pi * 2
+                offset = Vector3.new(math.cos(theta) * r, 0, math.sin(theta) * r)
+            end
+
+            local origin = Vector3.new(centerPos.X + offset.X, centerPos.Y + rayUp, centerPos.Z + offset.Z)
+            local direction = Vector3.new(0, -rayDown, 0)
+            local result = Workspace:Raycast(origin, direction, params)
+            if result and result.Position then
+                -- Prefer surfaces made of Water (Terrain or part material)
+                local mat = result.Material
+                if mat == Enum.Material.Water then
+                    local candidate = result.Position
+                    local d = (Vector3.new(candidate.X, 0, candidate.Z) - Vector3.new(centerPos.X, 0, centerPos.Z)).Magnitude
+                    if d < bestDist then
+                        best = candidate
+                        bestDist = d
+                    end
+                else
+                    -- Kadang terrain water tidak set Material.Water on hit (rare) -> fallback check instance name/type
+                    local inst = result.Instance
+                    if inst and inst:IsA("Terrain") then
+                        -- Raycast on terrain should have Material.Water if it's water; keep earlier check
+                        -- no-op here
+                    end
+                end
+            end
+        end
+        -- jika sudah ada kandidat paling dekat (misal r==0 center), kita bisa return langsung
+        if best then
+            return best
+        end
+    end
+
+    -- jika tidak menemukan water sama sekali, fallback ke centerPos
+    return centerPos
 end
 
 -- ===== Save Position Before First Teleport =====
@@ -243,8 +310,11 @@ local function teleportToTarget(target)
     
     -- Save position before first teleport
     saveCurrentPosition()
-    
-    local tpPos = target.pos + Vector3.new(0, hoverHeight, 0)
+
+    -- Find best water position (or fallback to pivot)
+    local landing = findBestWaterPosition(target.pos)
+    local tpPos = landing + Vector3.new(0, hoverHeight, 0)
+
     -- Instant teleport once
     setCFrameSafely(hrp, tpPos)
     -- Ensure we have a BodyPosition to maintain hover smoothly
@@ -253,7 +323,7 @@ local function teleportToTarget(target)
         bp.Position = tpPos
     end
 
-    print("[AutoTeleportEvent] Teleported to:", target.name, "at", tostring(target.pos))
+    print("[AutoTeleportEvent] Teleported to:", target.name, "at", tostring(landing))
     return true
 end
 
