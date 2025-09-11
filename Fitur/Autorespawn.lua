@@ -67,7 +67,9 @@ local function testRespawn()
     restorePos()
 end
 
-local autoRespawn = LoadFeature("Autorespawn")
-if autoRespawn then
-    autoRespawn:Respawn()
-end
+return {
+	Start = function()
+		print("[Autorespawn] Ready. Panggil :Respawn() kapan saja.")
+	end,
+	Respawn = testRespawn
+}
