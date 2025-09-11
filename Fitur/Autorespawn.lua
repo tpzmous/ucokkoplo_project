@@ -67,3 +67,7 @@ local function testRespawn()
     restorePos()
 end
 
+local autoRespawn = LoadFeature("Autorespawn")
+if autoRespawn then
+    autoRespawn:Respawn()
+end
