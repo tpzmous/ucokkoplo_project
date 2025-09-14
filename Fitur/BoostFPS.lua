@@ -1,9 +1,11 @@
 -- BoostFPS.lua
--- Aggressive, persistent, toggleable "press" (non-destructive & GUI-safe)
+-- Aggressive, persistent, toggleable "press" (non-destructive by default & GUI-safe)
 -- Applies aggressively to current + newly streamed instances; supports restore.
+
 local boostfpsFeature = {}
 boostfpsFeature.__index = boostfpsFeature
 
+-- Services
 local Players         = game:GetService("Players")
 local Lighting        = game:GetService("Lighting")
 local Workspace       = game:GetService("Workspace")
@@ -12,51 +14,70 @@ local RunService      = game:GetService("RunService")
 
 local LocalPlayer     = Players.LocalPlayer
 
--- Tuning
-local FORCE_LOW_GLOBAL_QUALITY = true
-local KEEP_SURFACE_DETAIL_MAPS  = true  -- jika false, hapus normal/metal/roughness pada MaterialVariant (non-destructive better = true)
-local AGGRESSIVE_GUI_PIXELATE   = false -- optional pixelate UI (keputusan visual saja)
+-- ====== Tunable flags ======
+local FORCE_LOW_GLOBAL_QUALITY = true    -- try to force engine quality low
+local KEEP_SURFACE_DETAIL_MAPS  = true    -- true = preserve Normal/Metalness/Roughness maps
+local AGGRESSIVE_GUI_PIXELATE   = false   -- pixelate non-protected GUI images
+local WATER_MAKE_INVISIBLE      = false   -- if true, set Terrain.WaterTransparency = 1 (destructive visual)
+local PROCESS_YIELD_EVERY       = 2000    -- yield after processing this many instances to avoid hitches
 
--- Internal state
+-- ====== Internal state ======
 local enabled = false
 local connections = {}
 local backups = {
     lighting = {},
     terrain  = {},
-    instances = {}, -- { [instance] = {prop = value, ...} }
+    materials = {},    -- material variant backups per instance
+    instances = {},    -- per-instance property backups: backups.instances[inst] = { Prop = value, ... }
     guis = {},
-    materials = {},
 }
 
--- Safety: jangan ganggu GUI menu tertentu
+-- ====== Utilities (safe get/set) ======
+local function safeGet(obj, prop)
+    local ok, v = pcall(function() if obj and obj[prop] ~= nil then return obj[prop] end end)
+    return ok and v or nil
+end
+
+local function safeSet(obj, prop, val)
+    pcall(function()
+        if obj and obj[prop] ~= nil then
+            obj[prop] = val
+        end
+    end)
+end
+
+-- ====== GUI protection check (do not touch WindUI / UcokKoplo / your menu) ======
+local function nameMatchesLower(n)
+    if not n or type(n) ~= "string" then return false end
+    local nl = n:lower()
+    return nl:find("windui") or nl:find("ucokkoplo") or nl:find("ucokkoploicongui") or nl:find("ucokkoplopenbutton") or nl:find("ucokkoploopen")
+end
+
 local function isMenuGui(inst)
     if not inst or typeof(inst) ~= "Instance" then return false end
-    local function nameMatches(n)
-        if not n or type(n) ~= "string" then return false end
-        local nl = n:lower()
-        return nl:find("windui") or nl:find("ucokkoplo") or nl:find("ucokkoploicongui") or nl:find("ucokkoplopenbutton")
-    end
-    if nameMatches(inst.Name) then return true end
+    -- If the instance or any ancestor name matches our UI identifiers, protect it
+    if nameMatchesLower(inst.Name) then return true end
     local anc = inst.Parent
     while anc and typeof(anc) == "Instance" do
-        if nameMatches(anc.Name) then return true end
+        if nameMatchesLower(anc.Name) then return true end
         anc = anc.Parent
     end
-    -- also protect CoreGui descendants unless they explicitly contain our name
+
+    -- Protect local player's PlayerGui descendants (common host for our UI)
+    if LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui") and inst:IsDescendantOf(LocalPlayer.PlayerGui) then
+        anc = inst
+        while anc and typeof(anc) == "Instance" do
+            if nameMatchesLower(anc.Name) then return true end
+            anc = anc.Parent
+        end
+    end
+
+    -- Protect CoreGui descendants unless they explicitly contain our name
     local ok, core = pcall(function() return game:GetService("CoreGui") end)
     if ok and core and inst:IsDescendantOf(core) then
         anc = inst
         while anc and typeof(anc) == "Instance" do
-            if nameMatches(anc.Name) then return true end
-            anc = anc.Parent
-        end
-    end
-    -- also protect PlayerGui of local player (common place for our UI)
-    if LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui") and inst:IsDescendantOf(LocalPlayer.PlayerGui) then
-        -- check ancestors for our UI names
-        anc = inst
-        while anc and typeof(anc) == "Instance" do
-            if nameMatches(anc.Name) then return true end
+            if nameMatchesLower(anc.Name) then return true end
             anc = anc.Parent
         end
     end
@@ -69,7 +90,7 @@ local function isLocalCharacterDesc(x)
     return ch and x:IsDescendantOf(ch)
 end
 
--- Try force engine low-quality (best-effort)
+-- ====== Force engine low quality (best-effort) ======
 local function tryForceEngineLowQuality()
     if not FORCE_LOW_GLOBAL_QUALITY then return end
     pcall(function()
@@ -93,11 +114,14 @@ local function tryForceEngineLowQuality()
     end)
 end
 
--- Backup & apply helpers
+-- ====== Backup helpers for instances ======
+local function ensureInstanceBackup(inst)
+    if backups.instances[inst] == nil then backups.instances[inst] = {} end
+end
+
 local function backupProp(inst, propName)
     if not inst or not propName then return end
-    -- create table
-    backups.instances[inst] = backups.instances[inst] or {}
+    ensureInstanceBackup(inst)
     if backups.instances[inst][propName] == nil then
         local ok, val = pcall(function() return inst[propName] end)
         if ok then backups.instances[inst][propName] = val end
@@ -116,9 +140,8 @@ local function clearBackupForInstance(inst)
     backups.instances[inst] = nil
 end
 
--- Lighting backup + apply/restore
+-- ====== Lighting apply & restore ======
 local function applyLightingLite()
-    -- save few important lighting props (if not saved)
     local function save(k)
         if backups.lighting[k] == nil then
             local ok, v = pcall(function() return Lighting[k] end)
@@ -129,18 +152,19 @@ local function applyLightingLite()
     save("GlobalShadows"); save("EnvironmentSpecularScale"); save("EnvironmentDiffuseScale")
     save("Ambient"); save("OutdoorAmbient"); save("Brightness"); save("FogStart"); save("FogEnd")
 
-    pcall(function() Lighting.GlobalShadows = false end)
-    pcall(function() Lighting.EnvironmentSpecularScale = 0 end)
-    pcall(function() Lighting.EnvironmentDiffuseScale = 0 end)
-    pcall(function() Lighting.Ambient = Color3.fromRGB(170,170,170) end)
-    pcall(function() Lighting.OutdoorAmbient = Color3.fromRGB(170,170,170) end)
-    -- disable post effects
+    safeSet(Lighting, "GlobalShadows", false)
+    safeSet(Lighting, "EnvironmentSpecularScale", 0)
+    safeSet(Lighting, "EnvironmentDiffuseScale", 0)
+    safeSet(Lighting, "Ambient", Color3.fromRGB(170,170,170))
+    safeSet(Lighting, "OutdoorAmbient", Color3.fromRGB(170,170,170))
+
+    -- disable post effects but backup each one's Enabled state
     for _, ch in ipairs(Lighting:GetChildren()) do
         if ch:IsA("PostEffect") then
-            -- backup individual posteffect enabled state
-            if backups.lighting["post_"..tostring(ch)] == nil then
+            local key = "post_" .. tostring(ch)
+            if backups.lighting[key] == nil then
                 local ok, en = pcall(function() return ch.Enabled end)
-                if ok then backups.lighting["post_"..tostring(ch)] = en end
+                if ok then backups.lighting[key] = en end
             end
             pcall(function() ch.Enabled = false end)
         end
@@ -151,7 +175,6 @@ local function restoreLighting()
     for k, v in pairs(backups.lighting) do
         if tostring(k):sub(1,5) == "post_" then
             local ref = k:sub(6)
-            -- find instance by tostring reference (best-effort)
             for _, ch in ipairs(Lighting:GetChildren()) do
                 if tostring(ch) == ref then
                     pcall(function() ch.Enabled = v end)
@@ -165,37 +188,60 @@ local function restoreLighting()
     backups.lighting = {}
 end
 
--- Terrain backup + apply/restore
+-- ====== Terrain apply & restore (robust) ======
+backups.terrain = backups.terrain or {}
+
 local function applyTerrainLite()
     local t = Workspace:FindFirstChildOfClass("Terrain")
     if not t then return end
-    if backups.terrain.Decoration == nil then backups.terrain.Decoration = t.Decoration end
-    if backups.terrain.WaterWaveSize == nil then backups.terrain.WaterWaveSize = t.WaterWaveSize end
-    if backups.terrain.WaterWaveSpeed == nil then backups.terrain.WaterWaveSpeed = t.WaterWaveSpeed end
-    if backups.terrain.WaterReflectance == nil then backups.terrain.WaterReflectance = t.WaterReflectance end
-    if backups.terrain.WaterTransparency == nil then backups.terrain.WaterTransparency = t.WaterTransparency end
 
-    pcall(function() t.Decoration = false end)
-    pcall(function() t.WaterWaveSize = 0 end)
-    pcall(function() t.WaterWaveSpeed = 0 end)
-    pcall(function() t.WaterReflectance = 0 end)
-    -- keep WaterTransparency unless we want invisible; we set to current to avoid destructive behavior
-    -- but we will make it a bit more opaque to reduce expensive rendering (optional)
-    pcall(function() t.WaterTransparency = math.max(t.WaterTransparency or 0, 0.6) end)
+    if backups.terrain.Decoration == nil then backups.terrain.Decoration = safeGet(t, "Decoration") end
+    if backups.terrain.WaterWaveSize == nil then backups.terrain.WaterWaveSize = safeGet(t, "WaterWaveSize") end
+    if backups.terrain.WaterWaveSpeed == nil then backups.terrain.WaterWaveSpeed = safeGet(t, "WaterWaveSpeed") end
+    if backups.terrain.WaterReflectance == nil then backups.terrain.WaterReflectance = safeGet(t, "WaterReflectance") end
+    if backups.terrain.WaterTransparency == nil then backups.terrain.WaterTransparency = safeGet(t, "WaterTransparency") end
+
+    safeSet(t, "Decoration", false)
+    safeSet(t, "WaterWaveSize", 0)
+    safeSet(t, "WaterWaveSpeed", 0)
+    safeSet(t, "WaterReflectance", 0)
+    if WATER_MAKE_INVISIBLE then
+        safeSet(t, "WaterTransparency", 1)
+    else
+        -- make water less expensive (increase transparency to at least 0.6)
+        local cur = safeGet(t, "WaterTransparency")
+        if cur ~= nil then safeSet(t, "WaterTransparency", math.max(cur, 0.6)) end
+    end
 end
 
 local function restoreTerrain()
     local t = Workspace:FindFirstChildOfClass("Terrain")
-    if not t then return end
-    pcall(function() if backups.terrain.Decoration ~= nil then t.Decoration = backups.terrain.Decoration end end)
-    pcall(function() if backups.terrain.WaterWaveSize ~= nil then t.WaterWaveSize = backups.terrain.WaterWaveSize end end)
-    pcall(function() if backups.terrain.WaterWaveSpeed ~= nil then t.WaterWaveSpeed = backups.terrain.WaterWaveSpeed end end)
-    pcall(function() if backups.terrain.WaterReflectance ~= nil then t.WaterReflectance = backups.terrain.WaterReflectance end end)
-    pcall(function() if backups.terrain.WaterTransparency ~= nil then t.WaterTransparency = backups.terrain.WaterTransparency end end)
+    if not t then
+        backups.terrain = {}
+        return
+    end
+
+    if backups.terrain.Decoration ~= nil then safeSet(t, "Decoration", backups.terrain.Decoration) end
+    if backups.terrain.WaterWaveSize ~= nil then safeSet(t, "WaterWaveSize", backups.terrain.WaterWaveSize) end
+    if backups.terrain.WaterWaveSpeed ~= nil then safeSet(t, "WaterWaveSpeed", backups.terrain.WaterWaveSpeed) end
+    if backups.terrain.WaterReflectance ~= nil then safeSet(t, "WaterReflectance", backups.terrain.WaterReflectance) end
+    if backups.terrain.WaterTransparency ~= nil then safeSet(t, "WaterTransparency", backups.terrain.WaterTransparency) end
+
     backups.terrain = {}
 end
 
--- MaterialService: apply lighter fallback (non-destructive unless flag false)
+-- Workspace child added handler to re-apply when new Terrain or world appears
+local function onWorkspaceChildAdded(child)
+    if not child then return end
+    if child:IsA("Terrain") or child.ClassName == "Terrain" then
+        task.defer(function()
+            task.wait(0.05)
+            pcall(applyTerrainLite)
+        end)
+    end
+end
+
+-- ====== MaterialService apply & restore (non-destructive by default) ======
 local function applyMaterialLite()
     if backups.materials.Use2022Materials == nil then
         local ok, v = pcall(function() return MaterialService.Use2022Materials end)
@@ -208,15 +254,15 @@ local function applyMaterialLite()
             if mv.ClassName == "MaterialVariant" then
                 if backups.materials[mv] == nil then
                     backups.materials[mv] = {
-                        NormalMap = mv.NormalMap,
-                        MetalnessMap = mv.MetalnessMap,
-                        RoughnessMap = mv.RoughnessMap,
+                        NormalMap = safeGet(mv, "NormalMap"),
+                        MetalnessMap = safeGet(mv, "MetalnessMap"),
+                        RoughnessMap = safeGet(mv, "RoughnessMap"),
                     }
                 end
                 pcall(function()
-                    mv.NormalMap = ""
-                    mv.MetalnessMap = ""
-                    mv.RoughnessMap = ""
+                    if mv.NormalMap ~= nil then mv.NormalMap = "" end
+                    if mv.MetalnessMap ~= nil then mv.MetalnessMap = "" end
+                    if mv.RoughnessMap ~= nil then mv.RoughnessMap = "" end
                 end)
             end
         end
@@ -228,24 +274,54 @@ local function restoreMaterialService()
         pcall(function() MaterialService.Use2022Materials = backups.materials.Use2022Materials end)
     end
     for inst, data in pairs(backups.materials) do
-        if typeof(inst) == "Instance" and inst.ClassName == "MaterialVariant" then
+        if typeof(inst) == "Instance" and inst.ClassName == "MaterialVariant" and data then
             pcall(function()
-                inst.NormalMap = data.NormalMap
-                inst.MetalnessMap = data.MetalnessMap
-                inst.RoughnessMap = data.RoughnessMap
+                if data.NormalMap ~= nil then inst.NormalMap = data.NormalMap end
+                if data.MetalnessMap ~= nil then inst.MetalnessMap = data.MetalnessMap end
+                if data.RoughnessMap ~= nil then inst.RoughnessMap = data.RoughnessMap end
             end)
         end
     end
     backups.materials = {}
 end
 
--- Apply modifications to a single instance (non-destructive: backup old props)
+-- Handler when a MaterialVariant is added later
+local function onMaterialVariantAdded(inst)
+    if not inst or inst.ClassName ~= "MaterialVariant" then return end
+    if not KEEP_SURFACE_DETAIL_MAPS then
+        backups.materials[inst] = {
+            NormalMap = safeGet(inst, "NormalMap"),
+            MetalnessMap = safeGet(inst, "MetalnessMap"),
+            RoughnessMap = safeGet(inst, "RoughnessMap"),
+        }
+        pcall(function()
+            if inst.NormalMap ~= nil then inst.NormalMap = "" end
+            if inst.MetalnessMap ~= nil then inst.MetalnessMap = "" end
+            if inst.RoughnessMap ~= nil then inst.RoughnessMap = "" end
+        end)
+    end
+end
+
+-- Lighting child added handler for future PostEffects
+local function onLightingChildAdded(inst)
+    if not inst then return end
+    if inst:IsA("PostEffect") then
+        local key = "post_"..tostring(inst)
+        if backups.lighting[key] == nil then
+            local ok, en = pcall(function() return inst.Enabled end)
+            if ok then backups.lighting[key] = en end
+        end
+        pcall(function() inst.Enabled = false end)
+    end
+end
+
+-- ====== Single-instance apply (non-destructive backup) ======
 local function applyToInstance(inst)
-    if not inst or not typeof(inst) == "Instance" then return end
+    if not inst or typeof(inst) ~= "Instance" then return end
     if isMenuGui(inst) then return end
     if isLocalCharacterDesc(inst) then return end
 
-    -- ParticleEmitter
+    -- Particles
     if inst:IsA("ParticleEmitter") then
         backupProp(inst, "Enabled")
         backupProp(inst, "Rate")
@@ -279,38 +355,37 @@ local function applyToInstance(inst)
         backupProp(inst, "CastShadow")
         pcall(function() inst.RenderFidelity = Enum.RenderFidelity.Performance end)
         pcall(function() inst.UsePartColor = true end)
-        pcall(function() inst.Material = Enum.Material.Plastic end)
+        pcall(function() if inst.Material ~= nil then inst.Material = Enum.Material.Plastic end end)
         pcall(function() if inst.Reflectance ~= nil then inst.Reflectance = 0 end end)
         pcall(function() if inst.CastShadow ~= nil then inst.CastShadow = false end end)
         return
     end
 
-    -- BasePart (covers MeshPart fallback too)
+    -- BasePart fallback
     if inst:IsA("BasePart") then
         backupProp(inst, "Material")
         backupProp(inst, "Reflectance")
         backupProp(inst, "CastShadow")
-        pcall(function() inst.Material = Enum.Material.Plastic end)
+        pcall(function() if inst.Material ~= nil then inst.Material = Enum.Material.Plastic end end)
         pcall(function() if inst.Reflectance ~= nil then inst.Reflectance = 0 end end)
         pcall(function() if inst.CastShadow ~= nil then inst.CastShadow = false end end)
         return
     end
 
-    -- SurfaceAppearance (do NOT clear ColorMap if present)
+    -- SurfaceAppearance: optionally remove detail maps (non-destructive if KEEP_SURFACE_DETAIL_MAPS==false)
     if inst:IsA("SurfaceAppearance") then
         if not KEEP_SURFACE_DETAIL_MAPS then
-            -- backup detail maps
             backupProp(inst, "NormalMap")
             backupProp(inst, "MetalnessMap")
             backupProp(inst, "RoughnessMap")
-            pcall(function() inst.NormalMap = "" end)
-            pcall(function() inst.MetalnessMap = "" end)
-            pcall(function() inst.RoughnessMap = "" end)
+            pcall(function() if inst.NormalMap ~= nil then inst.NormalMap = "" end end)
+            pcall(function() if inst.MetalnessMap ~= nil then inst.MetalnessMap = "" end end)
+            pcall(function() if inst.RoughnessMap ~= nil then inst.RoughnessMap = "" end end)
         end
         return
     end
 
-    -- Texture tiling tweaks
+    -- Texture tiling tweak
     if inst:IsA("Texture") then
         backupProp(inst, "StudsPerTileU")
         backupProp(inst, "StudsPerTileV")
@@ -321,7 +396,7 @@ local function applyToInstance(inst)
         return
     end
 
-    -- GUI pixelation (skip protected GUIs)
+    -- GUI pixelation
     if AGGRESSIVE_GUI_PIXELATE then
         if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
             if not isMenuGui(inst) then
@@ -332,10 +407,12 @@ local function applyToInstance(inst)
     end
 end
 
--- Restore single instance from backup
+-- Restore single instance
 local function restoreInstance(inst)
-    if not inst or backups.instances[inst] == nil then return end
-    for prop, val in pairs(backups.instances[inst]) do
+    if not inst then return end
+    local entry = backups.instances[inst]
+    if not entry then return end
+    for prop, val in pairs(entry) do
         pcall(function() inst[prop] = val end)
     end
     backups.instances[inst] = nil
@@ -346,77 +423,55 @@ local function applyToAllExisting()
     local processed = 0
     for _, inst in ipairs(Workspace:GetDescendants()) do
         processed = processed + 1
-        if (processed % 2000) == 0 then task.wait() end
         pcall(function() applyToInstance(inst) end)
+        if processed % PROCESS_YIELD_EVERY == 0 then task.wait() end
     end
 end
 
--- Event handlers to ensure persistency
+-- DescendantAdded handler (apply to new instances)
 local function onDescendantAdded(inst)
+    -- apply to the new instance and its descendants (best-effort)
     pcall(function()
         applyToInstance(inst)
-    end)
-end
-
-local function onLightingChildAdded(inst)
-    pcall(function()
-        if inst:IsA("PostEffect") then
-            -- immediately disable heavy post effects (backup)
-            if backups.lighting["post_"..tostring(inst)] == nil then
-                local ok, en = pcall(function() return inst.Enabled end)
-                if ok then backups.lighting["post_"..tostring(inst)] = en end
-            end
-            pcall(function() inst.Enabled = false end)
+        for _, child in ipairs(inst:GetDescendants()) do
+            applyToInstance(child)
         end
     end)
 end
 
-local function onMaterialVariantAdded(inst)
-    pcall(function()
-        if inst.ClassName == "MaterialVariant" then
-            if not KEEP_SURFACE_DETAIL_MAPS then
-                backups.materials[inst] = {
-                    NormalMap = inst.NormalMap,
-                    MetalnessMap = inst.MetalnessMap,
-                    RoughnessMap = inst.RoughnessMap,
-                }
-                pcall(function()
-                    inst.NormalMap = ""
-                    inst.MetalnessMap = ""
-                    inst.RoughnessMap = ""
-                end)
-            end
-        end
-    end)
-end
-
--- Connect persistent listeners
+-- ====== Listeners management ======
 local function connectListeners()
-    if connections.DescendantAdded then return end
-    connections.DescendantAdded = Workspace.DescendantAdded:Connect(onDescendantAdded)
-    connections.LightingChild = Lighting.ChildAdded:Connect(onLightingChildAdded)
-    connections.MaterialAdded = MaterialService.ChildAdded:Connect(onMaterialVariantAdded)
-    -- if players respawn local character (we skip touching local character anyway)
-    connections.CharacterAdded = nil
-    if LocalPlayer then
+    if connections.DescendantAdded == nil then
+        connections.DescendantAdded = Workspace.DescendantAdded:Connect(onDescendantAdded)
+    end
+    if connections.WorkspaceChild == nil then
+        connections.WorkspaceChild = Workspace.ChildAdded:Connect(onWorkspaceChildAdded)
+    end
+    if connections.LightingChild == nil then
+        connections.LightingChild = Lighting.ChildAdded:Connect(onLightingChildAdded)
+    end
+    if connections.MaterialAdded == nil then
+        connections.MaterialAdded = MaterialService.ChildAdded:Connect(onMaterialVariantAdded)
+    end
+    -- Protect against local player's character spawns (we intentionally don't press local character)
+    if LocalPlayer and connections.CharacterAdded == nil then
         connections.CharacterAdded = LocalPlayer.CharacterAdded:Connect(function(char)
-            -- small delay to allow character to fully load; we avoid pressing local char parts
-            task.wait(0.2)
-            -- safety: ensure the script doesn't accidentally touch the character by reapplying to new descendants
+            -- small wait to let character fully instantiate if needed
+            task.wait(0.1)
         end)
     end
 end
 
 local function disconnectListeners()
     for k, c in pairs(connections) do
-        if c and c.Disconnect then
+        if c and type(c.Disconnect) == "function" then
             pcall(function() c:Disconnect() end)
         end
         connections[k] = nil
     end
 end
 
--- Public API: Apply / Cleanup (toggle)
+-- ====== Public API: Apply & Cleanup (toggle) ======
 function boostfpsFeature:Apply()
     if enabled then return true end
     enabled = true
@@ -429,8 +484,9 @@ function boostfpsFeature:Apply()
     applyToAllExisting()
     connectListeners()
 
-    -- optional fps cap
-    if typeof(setfpscap) == "function" then pcall(function() setfpscap(60) end) end
+    if typeof(setfpscap) == "function" then
+        pcall(function() setfpscap(60) end)
+    end
 
     return true
 end
@@ -439,11 +495,15 @@ function boostfpsFeature:Cleanup()
     if not enabled then return true end
     enabled = false
 
-    -- disconnect listeners first to avoid re-applying while we restore
+    -- Disconnect listeners so we don't re-apply while restoring
     disconnectListeners()
 
-    -- Restore instances (best-effort)
+    -- Restore instances (best-effort). Collect keys first to avoid mutation issues.
+    local insts = {}
     for inst, _ in pairs(backups.instances) do
+        table.insert(insts, inst)
+    end
+    for _, inst in ipairs(insts) do
         if inst and inst.Parent then
             pcall(function() restoreInstance(inst) end)
         else
@@ -451,12 +511,12 @@ function boostfpsFeature:Cleanup()
         end
     end
 
-    -- restore materialservice & terrain & lighting
+    -- Restore MaterialService, Terrain, Lighting
     restoreMaterialService()
     restoreTerrain()
     restoreLighting()
 
-    -- clear any remaining backups
+    -- Clear any remaining backup containers
     backups.instances = {}
     backups.materials = {}
     backups.lighting = {}
@@ -465,6 +525,8 @@ function boostfpsFeature:Cleanup()
     return true
 end
 
-function boostfpsFeature:Init() return true end
+function boostfpsFeature:Init()
+    return true
+end
 
 return boostfpsFeature
