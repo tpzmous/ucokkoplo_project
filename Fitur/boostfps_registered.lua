@@ -200,4 +200,39 @@ end
 
 function boostfpsFeature:Cleanup() end
 
+-- ===== Auto-register helper =====
+-- Try to register this feature into common FeatureManager shapes so callers
+-- can GetFeature("BoostFPS") or GetFeature("boostfps") without worrying
+-- about case or explicit require/register.
+local function tryAutoRegister()
+    local ok = pcall(function()
+        if type(FeatureManager) ~= "table" then return end
+
+        -- Common pattern 1: FeatureManager:Register(name, feature)
+        if type(FeatureManager.Register) == "function" then
+            -- use colon call if supported
+            pcall(function() FeatureManager:Register("BoostFPS", boostfpsFeature) end)
+            pcall(function() FeatureManager:Register("boostfps", boostfpsFeature) end)
+            return
+        end
+
+        -- Some managers expose lowercase register
+        if type(FeatureManager.register) == "function" then
+            pcall(function() FeatureManager:register("BoostFPS", boostfpsFeature) end)
+            pcall(function() FeatureManager:register("boostfps", boostfpsFeature) end)
+            return
+        end
+
+        -- Fallback: directly populate LoadedFeatures table
+        if type(FeatureManager.LoadedFeatures) == "table" then
+            FeatureManager.LoadedFeatures["BoostFPS"] = boostfpsFeature
+            FeatureManager.LoadedFeatures["boostfps"] = boostfpsFeature
+            return
+        end
+    end)
+    return ok
+end
+
+pcall(tryAutoRegister)
+
 return boostfpsFeature
