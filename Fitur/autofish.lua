@@ -53,14 +53,15 @@ local lastBackpackCount = 0
 local fishCaughtFlag = false
 
 -- Rod-specific configs
+-- Rod-specific configs
 local FISHING_CONFIGS = {
     ["Fast"] = {
         chargeTime = 1.0,
         waitBetween = 0,
         rodSlot = 1,
         spamDelay = 0.05,      -- Spam every 50ms
-        maxSpamTime = 8,       -- Stop spam after 3s
-        skipMinigame = true    -- Skip tap-tap animation
+        maxSpamTime = 8,
+        skipMinigame = true
     },
     ["Slow"] = {
         chargeTime = 1.0,
@@ -68,10 +69,19 @@ local FISHING_CONFIGS = {
         rodSlot = 1,
         spamDelay = 0.1,
         maxSpamTime = 8,
-        skipMinigame = false,  -- Play tap-tap animation
-        minigameDuration = 5 -- Duration before firing completion
+        skipMinigame = false,
+        minigameDuration = 5
+    },
+    ["VeryFast"] = {           -- ⚡ Mode baru
+        chargeTime = 0.5,      -- lebih pendek
+        waitBetween = 0,       -- langsung ulang
+        rodSlot = 1,
+        spamDelay = 0.01,      -- spam tiap 10ms (super brutal)
+        maxSpamTime = 5,       -- stop lebih cepat (biar efisien)
+        skipMinigame = true    -- langsung skip
     }
 }
+
 
 -- Initialize
 function AutoFishFeature:Init(guiControls)
@@ -402,6 +412,7 @@ function AutoFishFeature:GetStatus()
 end
 
 -- Update mode
+-- Update mode
 function AutoFishFeature:SetMode(mode)
     if FISHING_CONFIGS[mode] then
         currentMode = mode
@@ -410,11 +421,14 @@ function AutoFishFeature:SetMode(mode)
             print("  - Skip minigame: ON")
         elseif mode == "Slow" then  
             print("  - Skip minigame: OFF (", FISHING_CONFIGS[mode].minigameDuration, "s animation)")
+        elseif mode == "VeryFast" then
+            print("  - EXTREME spam mode: 10ms delay, instant restart ⚡")
         end
         return true
     end
     return false
 end
+
 
 -- Get notification listener info for debugging
 function AutoFishFeature:GetNotificationInfo()
