@@ -1,6 +1,6 @@
 -- ===========================
--- AUTO FISH FEATURE - SPAM METHOD
--- File: autofish.lua
+-- AUTO FISH FEATURE - SPAM METHOD (FIXED)
+-- File: autofishv4_fixed.lua
 -- ===========================
 
 local AutoFishFeature = {}
@@ -14,7 +14,7 @@ local LocalPlayer = Players.LocalPlayer
 
 -- Network setup
 local NetPath = nil
-local EquipTool, ChargeFishingRod, RequestFishing, FishingCompleted
+local EquipTool, ChargeFishingRod, RequestFishing, FishingCompleted, FishObtainedNotification
 
 local function initializeRemotes()
     local success = pcall(function()
@@ -27,6 +27,7 @@ local function initializeRemotes()
         ChargeFishingRod = NetPath:WaitForChild("RF/ChargeFishingRod", 5)
         RequestFishing = NetPath:WaitForChild("RF/RequestFishingMinigameStarted", 5)
         FishingCompleted = NetPath:WaitForChild("RE/FishingCompleted", 5)
+        FishObtainedNotification = NetPath:WaitForChild("RE/ObtainedNewFishNotification", 5)
         
         return true
     end)
@@ -36,9 +37,10 @@ end
 
 -- Feature state
 local isRunning = false
-local currentMode = "Perfect"
+local currentMode = "Fast"
 local connection = nil
 local spamConnection = nil
+local fishObtainedConnection = nil
 local controls = {}
 local fishingInProgress = false
 local lastFishTime = 0
@@ -48,29 +50,26 @@ local remotesInitialized = false
 local spamActive = false
 local completionCheckActive = false
 local lastBackpackCount = 0
+local fishCaughtFlag = false
 
 -- Rod-specific configs
 local FISHING_CONFIGS = {
-    ["Perfect"] = {
+    ["Fast"] = {
         chargeTime = 1.0,
         waitBetween = 0,
         rodSlot = 1,
-        spamDelay = 0.05,      -- Spam every 100ms
-        maxSpamTime = 3      -- Stop spam after 10s
+        spamDelay = 0.05,      -- Spam every 50ms
+        maxSpamTime = 8,       -- Stop spam after 3s
+        skipMinigame = true    -- Skip tap-tap animation
     },
-    ["OK"] = {
-        chargeTime = 0.9,
-        waitBetween = 0.3,
+    ["Slow"] = {
+        chargeTime = 1.0,
+        waitBetween = 1,
         rodSlot = 1,
         spamDelay = 0.1,
-        maxSpamTime = 8
-    },
-    ["Mid"] = {
-        chargeTime = 0.5,
-        waitBetween = 0.2,
-        rodSlot = 1,
-        spamDelay = 0.1,
-        maxSpamTime = 6
+        maxSpamTime = 8,
+        skipMinigame = false,  -- Play tap-tap animation
+        minigameDuration = 5 -- Duration before firing completion
     }
 }
 
@@ -87,7 +86,7 @@ function AutoFishFeature:Init(guiControls)
     -- Initialize backpack count for completion detection
     self:UpdateBackpackCount()
     
-    print("[AutoFish] Initialized with SPAM method")
+    print("[AutoFish] Initialized with SPAM method - Fast & Slow modes")
     return true
 end
 
@@ -101,12 +100,16 @@ function AutoFishFeature:Start(config)
     end
     
     isRunning = true
-    currentMode = config.mode or "Perfect"
+    currentMode = config.mode or "Fast"
     fishingInProgress = false
     spamActive = false
     lastFishTime = 0
+    fishCaughtFlag = false
     
     print("[AutoFish] Started SPAM method - Mode:", currentMode)
+    
+    -- Setup fish obtained listener
+    self:SetupFishObtainedListener()
     
     -- Main fishing loop
     connection = RunService.Heartbeat:Connect(function()
@@ -123,6 +126,7 @@ function AutoFishFeature:Stop()
     fishingInProgress = false
     spamActive = false
     completionCheckActive = false
+    fishCaughtFlag = false
     
     if connection then
         connection:Disconnect()
@@ -134,7 +138,48 @@ function AutoFishFeature:Stop()
         spamConnection = nil
     end
     
+    if fishObtainedConnection then
+        fishObtainedConnection:Disconnect()
+        fishObtainedConnection = nil
+    end
+    
     print("[AutoFish] Stopped SPAM method")
+end
+
+-- Setup fish obtained notification listener
+function AutoFishFeature:SetupFishObtainedListener()
+    if not FishObtainedNotification then
+        warn("[AutoFish] FishObtainedNotification not available")
+        return
+    end
+    
+    -- Disconnect existing connection if any
+    if fishObtainedConnection then
+        fishObtainedConnection:Disconnect()
+    end
+    
+    fishObtainedConnection = FishObtainedNotification.OnClientEvent:Connect(function(...)
+        if isRunning then
+            print("[AutoFish] Fish obtained notification received!")
+            fishCaughtFlag = true
+            
+            -- Stop current spam immediately
+            if spamActive then
+                spamActive = false
+                completionCheckActive = false
+            end
+            
+            -- Reset fishing state for next cycle (fast restart)
+            spawn(function()
+                task.wait(0.1) -- Small delay for stability
+                fishingInProgress = false
+                fishCaughtFlag = false
+                print("[AutoFish] Ready for next cycle (fast restart)")
+            end)
+        end
+    end)
+    
+    print("[AutoFish] Fish obtained listener setup complete")
 end
 
 -- Main spam-based fishing loop
@@ -183,8 +228,8 @@ function AutoFishFeature:ExecuteSpamFishingSequence()
     if not self:CastRod() then
         return false
     end
-    
-    -- Step 4: Start completion spam
+
+    -- Step 4: Start completion spam with mode-specific behavior
     self:StartCompletionSpam(config.spamDelay, config.maxSpamTime)
     
     return true
@@ -219,38 +264,55 @@ function AutoFishFeature:CastRod()
     
     local success = pcall(function()
         local x = -1.233184814453125
-        local z =  0.9999120558411321
+        local z = 0.9999120558411321
         return RequestFishing:InvokeServer(x, z)
     end)
     
     return success
 end
 
--- Start spamming FishingCompleted
+-- Start spamming FishingCompleted with mode-specific behavior
 function AutoFishFeature:StartCompletionSpam(delay, maxTime)
     if spamActive then return end
     
     spamActive = true
     completionCheckActive = true
+    fishCaughtFlag = false
     local spamStartTime = tick()
+    local config = FISHING_CONFIGS[currentMode]
     
-    print("[AutoFish] Starting completion SPAM...")
+    print("[AutoFish] Starting completion SPAM - Mode:", currentMode)
     
     -- Update backpack count before spam
     self:UpdateBackpackCount()
     
     spawn(function()
+        -- Mode-specific behavior
+        if currentMode == "Slow" and not config.skipMinigame then
+            -- Slow mode: Wait for minigame animation
+            print("[AutoFish] Slow mode: Playing minigame animation for", config.minigameDuration, "seconds")
+            task.wait(config.minigameDuration)
+            
+            -- Check if fish was already caught during animation
+            if fishCaughtFlag or not isRunning or not spamActive then
+                spamActive = false
+                completionCheckActive = false
+                return
+            end
+        end
+        
+        -- Start spamming (for both modes, but Slow starts after minigame delay)
         while spamActive and isRunning and (tick() - spamStartTime) < maxTime do
             -- Fire completion
             local fired = self:FireCompletion()
             
-            -- Check if fishing completed
-            if self:CheckFishingCompleted() then
-                print("[AutoFish] Fish caught via SPAM method!")
+            -- Check if fishing completed using notification listener OR backpack method
+            if fishCaughtFlag or self:CheckFishingCompleted() then
+                print("[AutoFish] Fish caught detected!")
                 break
             end
             
-            wait(delay)
+            task.wait(delay)
         end
         
         -- Stop spam
@@ -274,16 +336,21 @@ function AutoFishFeature:FireCompletion()
     return success
 end
 
--- Check if fishing completed successfully
+-- Check if fishing completed successfully (fallback method)
 function AutoFishFeature:CheckFishingCompleted()
-    -- Method 1: Check backpack item count increase
+    -- Primary method: notification listener flag
+    if fishCaughtFlag then
+        return true
+    end
+    
+    -- Fallback method: Check backpack item count increase
     local currentCount = self:GetBackpackItemCount()
     if currentCount > lastBackpackCount then
         lastBackpackCount = currentCount
         return true
     end
     
-    -- Method 2: Check character tool state
+    -- Method 3: Check character tool state
     if LocalPlayer.Character then
         local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
         if not tool then
@@ -291,9 +358,6 @@ function AutoFishFeature:CheckFishingCompleted()
             return false -- Don't rely on this alone
         end
     end
-    
-    -- Method 3: Check player stats (if game has fishing stats)
-    -- This is game-specific, might need adjustment
     
     return false
 end
@@ -331,7 +395,9 @@ function AutoFishFeature:GetStatus()
         spamming = spamActive,
         lastCatch = lastFishTime,
         backpackCount = lastBackpackCount,
-        remotesReady = remotesInitialized
+        fishCaughtFlag = fishCaughtFlag,
+        remotesReady = remotesInitialized,
+        listenerReady = fishObtainedConnection ~= nil
     }
 end
 
@@ -339,10 +405,24 @@ end
 function AutoFishFeature:SetMode(mode)
     if FISHING_CONFIGS[mode] then
         currentMode = mode
-        print("[AutoFish] SPAM mode changed to:", mode)
+        print("[AutoFish] Mode changed to:", mode)
+        if mode == "Fast" then
+            print("  - Skip minigame: ON")
+        elseif mode == "Slow" then  
+            print("  - Skip minigame: OFF (", FISHING_CONFIGS[mode].minigameDuration, "s animation)")
+        end
         return true
     end
     return false
+end
+
+-- Get notification listener info for debugging
+function AutoFishFeature:GetNotificationInfo()
+    return {
+        hasNotificationRemote = FishObtainedNotification ~= nil,
+        listenerConnected = fishObtainedConnection ~= nil,
+        fishCaughtFlag = fishCaughtFlag
+    }
 end
 
 -- Cleanup
