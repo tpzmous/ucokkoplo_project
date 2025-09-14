@@ -1,11 +1,8 @@
 -- Boost FPS - Low-Res "Press" (one-shot, no restore, no deletion)
 -- Fokus: turunkan LOD/quality tanpa menghapus Decal/Texture/ColorMap
--- Kompatibel sebagai feature yang dikembalikan (return table) untuk FeatureManager
-
 local boostfpsFeature = {}
 boostfpsFeature.__index = boostfpsFeature
 
--- ====== Services ======
 local Players         = game:GetService("Players")
 local Lighting        = game:GetService("Lighting")
 local Workspace       = game:GetService("Workspace")
@@ -16,63 +13,57 @@ local LocalPlayer     = Players.LocalPlayer
 local FORCE_LOW_GLOBAL_QUALITY = true   -- coba paksa SavedQualityLevel=1 via hidden props/fflags (jika tersedia)
 local KEEP_SURFACE_DETAIL_MAPS  = true  -- true: JANGAN hapus Normal/Metalness/RoughnessMap (full preserve)
                                          -- false: buang detail maps (tetap simpan ColorMap) -> lebih ringan tapi bukan "press murni"
+
+-- OPTIONAL (UI 2D, tidak memengaruhi world texture VRAM secara signifikan)
 local AGGRESSIVE_GUI_PIXELATE   = false -- set ResampleMode=Pixelated pada ImageLabel/Button untuk kesan low-res UI
-local TARGET_FPS                = 60    -- fps cap opsional (jika executor support)
 
--- ====== Engine-level quality helpers ======
 local function tryForceEngineLowQuality()
-    if not FORCE_LOW_GLOBAL_QUALITY then return false end
-
-    local ok1 = false
-    pcall(function()
+    if not FORCE_LOW_GLOBAL_QUALITY then return end
+    local ok1, _ = pcall(function()
         local ugs = UserSettings():GetService("UserGameSettings")
-        -- matikan auto, set level serendah mungkin bila ada
-        if ugs.AutoGraphicsQuality ~= nil then
-            ugs.AutoGraphicsQuality = false
-        end
+        -- matikan auto, set level serendah mungkin
+        if ugs.AutoGraphicsQuality ~= nil then ugs.AutoGraphicsQuality = false end
         if ugs.SavedQualityLevel ~= nil then
             ugs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
         end
+        -- Beberapa build pakai "GraphicsQualityLevel" (deprecated, tapi coba saja)
         if ugs.GraphicsQualityLevel ~= nil then
             ugs.GraphicsQualityLevel = 1
         end
-        ok1 = true
     end)
 
-    -- Executor-specific fallbacks (some executors expose these)
-    local ok2 = false
-    pcall(function()
-        if typeof(sethiddenproperty) == "function" then
-            local ugs = UserSettings():GetService("UserGameSettings")
-            sethiddenproperty(ugs, "AutoGraphicsQuality", false)
-            sethiddenproperty(ugs, "SavedQualityLevel", Enum.SavedQualitySetting.QualityLevel1)
-            ok2 = true
-        end
-    end)
+    -- Executor-specific fallbacks
+    if typeof(getfenv) == "function" then
+        local ok2, _ = pcall(function()
+            if typeof(sethiddenproperty) == "function" then
+                local ugs = UserSettings():GetService("UserGameSettings")
+                sethiddenproperty(ugs, "AutoGraphicsQuality", false)
+                sethiddenproperty(ugs, "SavedQualityLevel", Enum.SavedQualitySetting.QualityLevel1)
+            end
+        end)
 
-    local ok3 = false
-    pcall(function()
-        if typeof(setfflag) == "function" then
-            -- beberapa FFlag umum untuk prefer low quality
-            pcall(function() setfflag("DFFlagDebugForceLowTargetQualityLevel", "True") end)
-            pcall(function() setfflag("FFlagDebugGraphicsPreferLowQualityTextures", "True") end)
-            ok3 = true
-        end
-    end)
-
-    return ok1 or ok2 or ok3
+        local ok3, _ = pcall(function()
+            if typeof(setfflag) == "function" then
+                -- FFlag names bisa berubah; kita jaga-jaga beberapa commonly-used ones
+                setfflag("DFFlagDebugForceLowTargetQualityLevel", "True")
+                setfflag("FFlagDebugGraphicsPreferLowQualityTextures", "True")
+                -- Beberapa executor support DFInt untuk target quality; kalau tidak, diabaikan
+                -- setfflag("DFIntTaskSchedulerTargetFps", "60") -- opsional (fps behavior), bukan texture
+            end
+        end)
+        return ok1 or ok2 or ok3
+    end
+    return ok1
 end
 
--- ====== Lighting tweaks (non-destructive) ======
 local function applyLightingLite()
-    -- jangan hapus Sky/Atmosphere; cukup matikan efek mahal
+    -- Jangan hapus Sky/Atmosphere; cuma turunkan efek yang mahal (tanpa delete)
     pcall(function() Lighting.GlobalShadows = false end)
     pcall(function() Lighting.EnvironmentSpecularScale = 0 end)
     pcall(function() Lighting.EnvironmentDiffuseScale  = 0 end)
+    -- Naikkan ambient supaya gak gelap walau shadow off
     pcall(function() Lighting.Ambient        = Color3.fromRGB(170,170,170) end)
     pcall(function() Lighting.OutdoorAmbient = Color3.fromRGB(170,170,170) end)
-
-    -- matikan post effects (Bloom, SunRays, SSAO, dll) tanpa menghapus instance
     for _, ch in ipairs(Lighting:GetChildren()) do
         if ch:IsA("PostEffect") then
             pcall(function() ch.Enabled = false end)
@@ -80,23 +71,21 @@ local function applyLightingLite()
     end
 end
 
--- ====== Terrain tweaks (non-destructive) ======
 local function applyTerrainLite()
     local t = Workspace:FindFirstChildOfClass("Terrain")
     if not t then return end
-    pcall(function() t.Decoration       = false end)
-    pcall(function() t.WaterWaveSize    = 0 end)
-    pcall(function() t.WaterWaveSpeed   = 0 end)
-    pcall(function() t.WaterReflectance = 0 end)
-    -- jangan set WaterTransparency jadi 1 karena itu menghilangkan air sepenuhnya
+    pcall(function() t.Decoration        = false end)
+    pcall(function() t.WaterWaveSize     = 0     end)
+    pcall(function() t.WaterWaveSpeed    = 0     end)
+    pcall(function() t.WaterReflectance  = 0     end)
+    -- Note: WaterTransparency = 1 bikin “hilang”; kita biarkan (press fokus texture, bukan visual total)
 end
 
--- ====== MaterialService downgrade (non-destructive unless flag) ======
 local function downgradeMaterialService()
+    -- Material 2022 cenderung lebih berat; matikan agar fallback lebih ringan
     pcall(function() MaterialService.Use2022Materials = false end)
-
     if not KEEP_SURFACE_DETAIL_MAPS then
-        -- ini menghapus hanya detail maps; ColorMap dipertahankan
+        -- Ini bukan "press" murni, tapi menghapus detail maps (bukan ColorMap)
         for _, mv in ipairs(MaterialService:GetChildren()) do
             if mv.ClassName == "MaterialVariant" then
                 pcall(function()
@@ -109,35 +98,32 @@ local function downgradeMaterialService()
     end
 end
 
--- ====== Utility: apakah instance adalah bagian karakter lokal ======
 local function isLocalCharacterDesc(x)
     local ch = LocalPlayer and LocalPlayer.Character
     return ch and x:IsDescendantOf(ch)
 end
 
--- ====== Core: tekan world textures (LOD / disable effects, tanpa hapus ColorMap/Decal) ======
 local function pressWorldTextures()
     local processed = 0
     for _, inst in ipairs(Workspace:GetDescendants()) do
         processed += 1
-        -- yield sesekali untuk mencegah freeze pada loop besar
         if (processed % 4000) == 0 then task.wait() end
 
-        -- jangan ganggu aset milik karakter kita
+        -- Jangan ganggu aset milik karakter kita
         if isLocalCharacterDesc(inst) then
             continue
         end
 
-        -- 1) MeshPart → paksa LOD performance, shading sederhana
+        -- 1) MeshPart → paksa LOD perf (mirip “low-res sampling”)
         if inst:IsA("MeshPart") then
             pcall(function()
                 inst.RenderFidelity = Enum.RenderFidelity.Performance
-                inst.UsePartColor   = true
-                -- intentionally DO NOT modify TextureID/ColorMap here (preserve visual assets)
+                inst.UsePartColor   = true -- pastikan shading simple
             end)
+            -- JANGAN sentuh TextureID / ColorMap (kita tidak menghapus)
         end
 
-        -- 2) SurfaceAppearance → opsional: hapus detail maps tergantung flag
+        -- 2) SurfaceAppearance → JANGAN hapus ColorMap. Optional: buang detail maps kalau flag off
         if inst:IsA("SurfaceAppearance") then
             if not KEEP_SURFACE_DETAIL_MAPS then
                 pcall(function()
@@ -146,19 +132,19 @@ local function pressWorldTextures()
                     inst.RoughnessMap = ""
                 end)
             end
-            -- biarkan ColorMap utuh (engine akan memilih mip rendah saat kualitas rendah)
+            -- Kalau ada property sampling/alpha mode, biarkan default; engine akan pilih mip low saat quality rendah
         end
 
-        -- 3) Texture (permukaan tiling) → kurangi frekuensi tiling supaya tampak blur
+        -- 3) Texture (permukaan) → kurangi frekuensi tiling (visual tampak “lebih blur/less detail”)
         if inst:IsA("Texture") then
             pcall(function()
-                -- pastikan StudsPerTile minimal lebih besar agar terlihat lebih 'low-res'
-                inst.StudsPerTileU = math.max((inst.StudsPerTileU or 1), 8)
-                inst.StudsPerTileV = math.max((inst.StudsPerTileV or 1), 8)
+                -- naikkan ukuran tile supaya per-unit area tekstur keliatan lebih “low-res”
+                inst.StudsPerTileU = math.max(inst.StudsPerTileU, 8)
+                inst.StudsPerTileV = math.max(inst.StudsPerTileV, 8)
             end)
         end
 
-        -- 4) Particle/Beam/Trail/Light → disable (tidak delete)
+        -- 4) Particle/Light/Trail/Beam → DISABLE (tidak delete), supaya GPU fokus raster sederhana
         if inst:IsA("ParticleEmitter") then
             pcall(function() inst.Enabled = false; inst.Rate = 0 end)
         elseif inst:IsA("Beam") or inst:IsA("Trail") then
@@ -167,7 +153,7 @@ local function pressWorldTextures()
             pcall(function() inst.Enabled = false; inst.Brightness = 0 end)
         end
 
-        -- 5) BasePart → shading sederhana, no reflect/shadow
+        -- 5) BasePart shading lebih sederhana (tanpa menyentuh TextureId/Decal)
         if inst:IsA("BasePart") then
             pcall(function()
                 inst.Material    = Enum.Material.Plastic
@@ -178,7 +164,6 @@ local function pressWorldTextures()
     end
 end
 
--- ====== Optional: pixelate 2D UI (cosmetic) ======
 local function pixelate2DImages()
     if not AGGRESSIVE_GUI_PIXELATE then return end
     for _, gui in ipairs(game:GetDescendants()) do
@@ -192,56 +177,27 @@ local function pixelate2DImages()
     end
 end
 
--- ====== Feature API (Init/Apply/Cleanup) ======
-function boostfpsFeature:Init()
-    -- tidak perlu inisialisasi berat di sini; kembalikan true agar loader anggap success
-    return true
-end
+function boostfpsFeature:Init() return true end
 
 function boostfpsFeature:Apply()
-    -- 0) coba paksa engine ke low quality jika tersedia
+    -- 0) Coba paksa kualitas global ke low (ini yang paling “press” beneran)
     tryForceEngineLowQuality()
 
-    -- 1) turunkan lighting & terrain cost (tanpa menghapus aset)
+    -- 1) Turunkan lighting/terrain cost tanpa menghapus aset
     applyLightingLite()
     applyTerrainLite()
     downgradeMaterialService()
 
-    -- 2) tekan dunia: LOD/perf path + tiling coarser (tanpa hapus ColorMap/Decal)
+    -- 2) “Press” dunia: LOD/performance path + tiling coarser (tanpa hapus tekstur/color map)
     pressWorldTextures()
 
-    -- 3) (opsional) pixelate UI untuk efek low-res
+    -- 3) (opsional) UI jadi pixelated (kesan low-res, bukan VRAM saver)
     pixelate2DImages()
 
-    -- 4) fps cap kalau ada (opsional)
-    if typeof(setfpscap) == "function" then
-        pcall(function() setfpscap(TARGET_FPS or 60) end)
-    end
+    -- 4) (opsional) fps cap kalau ada (bukan texture-related, tapi bantu stabil)
+    if typeof(setfpscap) == "function" then pcall(function() setfpscap(60) end) end
 end
 
-function boostfpsFeature:Cleanup()
-    -- Versi press: tidak ada restore terperinci (one-shot). Kosong supaya loader tidak error jika dipanggil.
-end
-
--- ====== (Optional) Auto-register helper ======
--- Jika environment memiliki FeatureManager global, coba daftarkan agar GetFeature() bisa langsung pakai nama ini.
-pcall(function()
-    if type(FeatureManager) ~= "table" then return end
-    -- support beberapa API register yang mungkin ada
-    if type(FeatureManager.Register) == "function" then
-        pcall(function() FeatureManager:Register("BoostFPS", boostfpsFeature) end)
-        pcall(function() FeatureManager:Register("boostfps", boostfpsFeature) end)
-        return
-    end
-    if type(FeatureManager.register) == "function" then
-        pcall(function() FeatureManager:register("BoostFPS", boostfpsFeature) end)
-        pcall(function() FeatureManager:register("boostfps", boostfpsFeature) end)
-        return
-    end
-    if type(FeatureManager.LoadedFeatures) == "table" then
-        FeatureManager.LoadedFeatures["BoostFPS"] = boostfpsFeature
-        FeatureManager.LoadedFeatures["boostfps"] = boostfpsFeature
-    end
-end)
+function boostfpsFeature:Cleanup() end
 
 return boostfpsFeature
