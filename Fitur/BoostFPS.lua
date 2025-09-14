@@ -1,4 +1,4 @@
--- Boost FPS - Extreme Clean (hapus efek berat, preserve GUI & textures)
+-- Boost FPS - Ultra Extreme (hapus SEMUA efek, preserve GUI)
 local boostfpsFeature = {}
 boostfpsFeature.__index = boostfpsFeature
 
@@ -8,168 +8,142 @@ local Workspace       = game:GetService("Workspace")
 local MaterialService = game:GetService("MaterialService")
 local LocalPlayer     = Players.LocalPlayer
 
--- Helper: apakah instance termasuk GUI/menu kita (jangan sentuh)
+-- Helper: skip GUI/menu
 local function isMenuGui(inst)
     if not inst or typeof(inst) ~= "Instance" then return false end
-
-    -- Cek nama instance & ancestor names untuk "WindUI" / "UcokKoplo"
     local function nameMatches(n)
         if not n or type(n) ~= "string" then return false end
         local nl = n:lower()
-        return nl:find("windui") or nl:find("ucokkoplo") or nl:find("ucokkoploicongui") or nl:find("ucokkoplopenbutton")
+        return nl:find("windui") or nl:find("ucokkoplo")
     end
-
     if nameMatches(inst.Name) then return true end
-
     local anc = inst.Parent
     while anc and typeof(anc) == "Instance" do
-        if nameMatches(anc.Name) then
-            return true
-        end
+        if nameMatches(anc.Name) then return true end
         anc = anc.Parent
     end
-
     return false
 end
 
--- Paksa kualitas serendah mungkin (fallbacks jika tersedia)
+-- Force engine low quality
 local function tryForceEngineLowQuality()
     pcall(function()
         local ugs = UserSettings():GetService("UserGameSettings")
-        if ugs.AutoGraphicsQuality ~= nil then pcall(function() ugs.AutoGraphicsQuality = false end) end
-        if ugs.SavedQualityLevel ~= nil then pcall(function() ugs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1 end) end
-        if ugs.GraphicsQualityLevel ~= nil then pcall(function() ugs.GraphicsQualityLevel = 1 end) end
+        ugs.AutoGraphicsQuality = false
+        ugs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+        ugs.GraphicsQualityLevel = 1
     end)
-
-    -- executor fallbacks (harus di-wrap pcall)
     pcall(function()
         if typeof(sethiddenproperty) == "function" then
             local ugs = UserSettings():GetService("UserGameSettings")
-            pcall(function() sethiddenproperty(ugs, "AutoGraphicsQuality", false) end)
-            pcall(function() sethiddenproperty(ugs, "SavedQualityLevel", Enum.SavedQualitySetting.QualityLevel1) end)
+            sethiddenproperty(ugs, "AutoGraphicsQuality", false)
+            sethiddenproperty(ugs, "SavedQualityLevel", Enum.SavedQualitySetting.QualityLevel1)
         end
     end)
-
     pcall(function()
         if typeof(setfflag) == "function" then
-            pcall(function() setfflag("DFFlagDebugForceLowTargetQualityLevel", "True") end)
-            pcall(function() setfflag("FFlagDebugGraphicsPreferLowQualityTextures", "True") end)
+            setfflag("DFFlagDebugForceLowTargetQualityLevel", "True")
+            setfflag("FFlagDebugGraphicsPreferLowQualityTextures", "True")
         end
     end)
 end
 
--- Lighting: matikan efek berat tetapi jangan hapus Sky/Atmosphere instances (cukup disable)
-local function applyLightingExtreme()
+-- Lighting → full flat
+local function applyLightingNuke()
     pcall(function() Lighting.GlobalShadows = false end)
     pcall(function() Lighting.EnvironmentSpecularScale = 0 end)
     pcall(function() Lighting.EnvironmentDiffuseScale  = 0 end)
-    pcall(function() Lighting.Ambient        = Color3.fromRGB(170,170,170) end)
-    pcall(function() Lighting.OutdoorAmbient = Color3.fromRGB(170,170,170) end)
+    pcall(function() Lighting.Ambient        = Color3.fromRGB(200,200,200) end)
+    pcall(function() Lighting.OutdoorAmbient = Color3.fromRGB(200,200,200) end)
 
     for _, ch in ipairs(Lighting:GetChildren()) do
-        -- disable post processing effects; keep Sky/Atmosphere but set them minimal (don't destroy)
-        if ch:IsA("PostEffect") then
+        if ch:IsA("PostEffect") or ch:IsA("Sky") or ch:IsA("Atmosphere") then
             pcall(function() ch.Enabled = false end)
         end
     end
 end
 
--- Terrain: nonaktifkan dekorasi + buat air tidak bergerak dan (opsional) invisible
-local function applyTerrainExtreme()
+-- Terrain → air hilang total
+local function applyTerrainNuke()
     local t = Workspace:FindFirstChildOfClass("Terrain")
     if not t then return end
     pcall(function() t.Decoration        = false end)
     pcall(function() t.WaterWaveSize     = 0 end)
     pcall(function() t.WaterWaveSpeed    = 0 end)
     pcall(function() t.WaterReflectance  = 0 end)
-    -- Buat air invisible supaya tidak render gerakan/efek (sesuai permintaan "hilangkan semua efek air")
-    pcall(function() t.WaterTransparency = 1 end)
+    pcall(function() t.WaterTransparency = 1 end) -- 100% invisible
 end
 
--- Material: paksa fallback lebih ringan (hapus detail maps tapi jaga ColorMap)
-local function applyMaterialExtreme()
+-- Material → kosongkan SEMUA maps
+local function applyMaterialNuke()
     pcall(function() MaterialService.Use2022Materials = false end)
     for _, mv in ipairs(MaterialService:GetChildren()) do
         if mv:IsA("MaterialVariant") then
             pcall(function()
-                -- hapus detail maps untuk performance; biarkan ColorMap agar tampilan tetap valid
-                if mv.NormalMap    ~= nil then mv.NormalMap    = "" end
-                if mv.MetalnessMap ~= nil then mv.MetalnessMap = "" end
-                if mv.RoughnessMap ~= nil then mv.RoughnessMap = "" end
+                mv.ColorMap     = ""
+                mv.NormalMap    = ""
+                mv.MetalnessMap = ""
+                mv.RoughnessMap = ""
             end)
         end
     end
 end
 
--- Strip world effects (particles, beams, trails, lights) & simplify parts
-local function stripWorldEffects()
+-- Dunia → hapus semua efek + simplify parts
+local function stripWorldNuke()
     local processed = 0
     for _, inst in ipairs(Workspace:GetDescendants()) do
-        processed = processed + 1
+        processed += 1
         if (processed % 4000) == 0 then task.wait() end
 
-        -- jangan ganggu GUI / menu yang keliru ter-parented (safety)
-        if isMenuGui(inst) then
-            continue
-        end
+        if isMenuGui(inst) then continue end
 
-        -- Particle / Beam / Trail
-        if inst:IsA("ParticleEmitter") then
+        -- Semua efek off
+        if inst:IsA("ParticleEmitter") or inst:IsA("Beam") or inst:IsA("Trail") then
             pcall(function() inst.Enabled = false end)
-            pcall(function() if inst.Rate then inst.Rate = 0 end end)
-        elseif inst:IsA("Beam") or inst:IsA("Trail") then
-            pcall(function() inst.Enabled = false end)
-        -- Lights
+            if inst:IsA("ParticleEmitter") then pcall(function() inst.Rate = 0 end) end
         elseif inst:IsA("PointLight") or inst:IsA("SpotLight") or inst:IsA("SurfaceLight") then
-            pcall(function() inst.Enabled = false end)
-            pcall(function() if inst.Brightness then inst.Brightness = 0 end end)
-        -- MeshPart / BasePart simplification
-        elseif inst:IsA("MeshPart") then
+            pcall(function() inst.Enabled = false; inst.Brightness = 0 end)
+        elseif inst:IsA("MeshPart") or inst:IsA("BasePart") then
             pcall(function()
-                inst.RenderFidelity = Enum.RenderFidelity.Performance
-                inst.UsePartColor   = true
-                inst.Material       = Enum.Material.Plastic
-                if inst.Reflectance ~= nil then inst.Reflectance = 0 end
-                if inst.CastShadow ~= nil then inst.CastShadow = false end
+                inst.Material     = Enum.Material.Plastic
+                inst.CastShadow   = false
+                inst.Reflectance  = 0
+                if inst:IsA("MeshPart") then
+                    inst.RenderFidelity = Enum.RenderFidelity.Performance
+                    inst.UsePartColor   = true
+                    inst.TextureID      = "" -- buang texture
+                end
             end)
-        elseif inst:IsA("BasePart") then
+        elseif inst:IsA("SurfaceAppearance") then
             pcall(function()
-                inst.Material    = Enum.Material.Plastic
-                if inst.Reflectance ~= nil then inst.Reflectance = 0 end
-                if inst.CastShadow ~= nil then inst.CastShadow = false end
+                inst.ColorMap     = ""
+                inst.NormalMap    = ""
+                inst.MetalnessMap = ""
+                inst.RoughnessMap = ""
             end)
+        elseif inst:IsA("Texture") or inst:IsA("Decal") then
+            pcall(function() inst.Texture = "" end)
         end
     end
 end
 
-function boostfpsFeature:Init()
-    return true
-end
+function boostfpsFeature:Init() return true end
 
 function boostfpsFeature:Apply()
-    -- 0) paksa kualitas global low
     tryForceEngineLowQuality()
+    applyLightingNuke()
+    applyTerrainNuke()
+    applyMaterialNuke()
+    stripWorldNuke()
 
-    -- 1) lighting & terrain (air non-moving & invisible)
-    applyLightingExtreme()
-    applyTerrainExtreme()
-
-    -- 2) material fallback
-    applyMaterialExtreme()
-
-    -- 3) hilangkan semua efek dunia (particle, lights, beams) & simplifikasi parts
-    stripWorldEffects()
-
-    -- 4) optional fps cap jika tersedia
     if typeof(setfpscap) == "function" then
         pcall(function() setfpscap(60) end)
     end
 end
 
 function boostfpsFeature:Cleanup()
-    -- Extreme-clean ini bersifat one-shot / non-restorable in-place.
-    -- Jika kamu ingin restore, harus menyimpan state sebelum Apply().
-    warn("[BoostFPS] Cleanup not implemented for extreme-clean mode. Restart the game to restore visuals.")
+    warn("[BoostFPS] Cleanup not supported (restart game to restore).")
 end
 
 return boostfpsFeature
