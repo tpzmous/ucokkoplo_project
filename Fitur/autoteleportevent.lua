@@ -92,6 +92,7 @@ local function removeHoverBP(hrp)
 end
 
 -- ===== Smart water-finding helpers =====
+-- ===== Smart Water Finder =====
 local function findBestWaterPosition(centerPos)
     -- Parameters (tweakable)
     local maxRadius = 30           -- cari hingga radius ini (studs)
@@ -117,19 +118,14 @@ local function findBestWaterPosition(centerPos)
         if r > maxRadius then break end
         local stepCount = (r == 0) and 1 or samplesPerRadius
         for i = 0, stepCount - 1 do
-            local offset = Vector3.new(0,0,0)
-            if r == 0 then
-                offset = Vector3.new(0,0,0)
-            else
-                local theta = (i / stepCount) * math.pi * 2
-                offset = Vector3.new(math.cos(theta) * r, 0, math.sin(theta) * r)
-            end
+            local offset = (r == 0)
+                and Vector3.new(0,0,0)
+                or Vector3.new(math.cos((i / stepCount) * math.pi * 2) * r, 0, math.sin((i / stepCount) * math.pi * 2) * r)
 
             local origin = Vector3.new(centerPos.X + offset.X, centerPos.Y + rayUp, centerPos.Z + offset.Z)
             local direction = Vector3.new(0, -rayDown, 0)
             local result = Workspace:Raycast(origin, direction, params)
             if result and result.Position then
-                -- Prefer surfaces made of Water (Terrain or part material)
                 local mat = result.Material
                 if mat == Enum.Material.Water then
                     local candidate = result.Position
@@ -139,24 +135,24 @@ local function findBestWaterPosition(centerPos)
                         bestDist = d
                     end
                 else
-                    -- Kadang terrain water tidak set Material.Water on hit (rare) -> fallback check instance name/type
+                    -- kadang terrain return bukan Water padahal air, bisa cek nama instance
                     local inst = result.Instance
                     if inst and inst:IsA("Terrain") then
-                        -- Raycast on terrain should have Material.Water if it's water; keep earlier check
-                        -- no-op here
+                        -- biasanya Terrain+Water return mat=Water, jadi skip
                     end
                 end
             end
         end
-        -- jika sudah ada kandidat paling dekat (misal r==0 center), kita bisa return langsung
+        -- jika sudah nemu kandidat (misal tepat di center), langsung return
         if best then
             return best
         end
     end
 
-    -- jika tidak menemukan water sama sekali, fallback ke centerPos
+    -- fallback jika tidak ketemu air sama sekali
     return centerPos
 end
+
 
 -- ===== Save Position Before First Teleport =====
 local function saveCurrentPosition()
