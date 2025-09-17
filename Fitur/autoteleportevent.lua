@@ -58,15 +58,8 @@ local function ensureCharacter()
     return char, hrp, hum
 end
 
--- NOTE: keepLookAt is a position (Vector3) to look at. If nil, fallback ke hrp current look vector.
 local function setCFrameSafely(hrp, targetPos, keepLookAt)
-    local look = nil
-    if keepLookAt and typeof(keepLookAt) == "Vector3" then
-        look = keepLookAt
-    else
-        -- using hrp.CFrame.LookVector + hrp.Position to build a look-at target at same Y-plane
-        look = hrp.CFrame.LookVector + hrp.Position
-    end
+    local look = keepLookAt or (hrp.CFrame.LookVector + hrp.Position)
     hrp.AssemblyLinearVelocity = Vector3.new()
     hrp.AssemblyAngularVelocity = Vector3.new()
     hrp.CFrame = CFrame.lookAt(targetPos, Vector3.new(look.X, targetPos.Y, look.Z))
