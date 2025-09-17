@@ -58,8 +58,15 @@ local function ensureCharacter()
     return char, hrp, hum
 end
 
+-- NOTE: keepLookAt is a position (Vector3) to look at. If nil, fallback ke hrp current look vector.
 local function setCFrameSafely(hrp, targetPos, keepLookAt)
-    local look = keepLookAt or (hrp.CFrame.LookVector + hrp.Position)
+    local look = nil
+    if keepLookAt and typeof(keepLookAt) == "Vector3" then
+        look = keepLookAt
+    else
+        -- using hrp.CFrame.LookVector + hrp.Position to build a look-at target at same Y-plane
+        look = hrp.CFrame.LookVector + hrp.Position
+    end
     hrp.AssemblyLinearVelocity = Vector3.new()
     hrp.AssemblyAngularVelocity = Vector3.new()
     hrp.CFrame = CFrame.lookAt(targetPos, Vector3.new(look.X, targetPos.Y, look.Z))
@@ -316,7 +323,8 @@ local function teleportToTarget(target)
     local tpPos = landing + Vector3.new(0, hoverHeight, 0)
 
     -- Instant teleport once
-    setCFrameSafely(hrp, tpPos)
+    -- IMPORTANT: pass 'landing' as lookAt to make character face the water (landing), not the ship model
+    setCFrameSafely(hrp, tpPos, landing)
     -- Ensure we have a BodyPosition to maintain hover smoothly
     local bp = ensureHoverBP(hrp)
     if bp then
