@@ -94,62 +94,67 @@ end
 -- ===== Smart water-finding helpers =====
 -- ===== Smart Water Finder =====
 local function findBestWaterPosition(centerPos)
-    -- Parameters (tweakable)
-    local maxRadius = 30           -- cari hingga radius ini (studs)
-    local radii = {0, 2, 4, 6, 10, 15, 20, 30} -- radius steps (center first)
-    local samplesPerRadius = 8     -- berapa sample per lingkaran (8 -> setiap 45°)
-    local rayUp = 60               -- start Y di atas pivot
-    local rayDown = 200            -- panjang ray ke bawah
-    local best = nil
-    local bestDist = math.huge
+    -- cari object kapal terdekat
+    local boat = nil
+    local minDist = math.huge
+    for _, v in ipairs(Workspace:GetChildren()) do
+        if v:IsA("Model") and v:FindFirstChild("HumanoidRootPart") == nil and v:FindFirstChildWhichIsA("VehicleSeat") then
+            local p = v:GetPivot().Position
+            local d = (Vector3.new(centerPos.X, 0, centerPos.Z) - Vector3.new(p.X, 0, p.Z)).Magnitude
+            if d < minDist then
+                minDist = d
+                boat = v
+            end
+        end
+    end
+
+    if boat then
+        local cf = boat:GetPivot()
+        local forward = cf.LookVector * 15 -- offset 15 stud ke depan
+        local origin = cf.Position + forward + Vector3.new(0, 60, 0)
+        local direction = Vector3.new(0, -200, 0)
+
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Blacklist
+        params.FilterDescendantsInstances = {boat, LocalPlayer.Character}
+        params.IgnoreWater = false
+
+        local result = Workspace:Raycast(origin, direction, params)
+        if result and result.Material == Enum.Material.Water then
+            return result.Position
+        end
+    end
+
+    -- fallback: pake scan spiral biasa
+    local maxRadius = 30
+    local radii = {0, 2, 4, 6, 10, 15, 20, 30}
+    local samplesPerRadius = 8
+    local rayUp, rayDown = 60, 200
+    local best, bestDist = nil, math.huge
 
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Blacklist
-    -- blacklist karakter pemain supaya ray tidak kena character sendiri
-    local char = LocalPlayer.Character
-    if char then
-        params.FilterDescendantsInstances = {char}
-    else
-        params.FilterDescendantsInstances = {}
-    end
+    params.FilterDescendantsInstances = {LocalPlayer.Character}
     params.IgnoreWater = false
 
     for _, r in ipairs(radii) do
         if r > maxRadius then break end
         local stepCount = (r == 0) and 1 or samplesPerRadius
         for i = 0, stepCount - 1 do
-            local offset = (r == 0)
-                and Vector3.new(0,0,0)
-                or Vector3.new(math.cos((i / stepCount) * math.pi * 2) * r, 0, math.sin((i / stepCount) * math.pi * 2) * r)
-
+            local theta = (i / stepCount) * math.pi * 2
+            local offset = (r == 0) and Vector3.new(0,0,0) or Vector3.new(math.cos(theta) * r, 0, math.sin(theta) * r)
             local origin = Vector3.new(centerPos.X + offset.X, centerPos.Y + rayUp, centerPos.Z + offset.Z)
-            local direction = Vector3.new(0, -rayDown, 0)
-            local result = Workspace:Raycast(origin, direction, params)
-            if result and result.Position then
-                local mat = result.Material
-                if mat == Enum.Material.Water then
-                    local candidate = result.Position
-                    local d = (Vector3.new(candidate.X, 0, candidate.Z) - Vector3.new(centerPos.X, 0, centerPos.Z)).Magnitude
-                    if d < bestDist then
-                        best = candidate
-                        bestDist = d
-                    end
-                else
-                    -- kadang terrain return bukan Water padahal air, bisa cek nama instance
-                    local inst = result.Instance
-                    if inst and inst:IsA("Terrain") then
-                        -- biasanya Terrain+Water return mat=Water, jadi skip
-                    end
+            local result = Workspace:Raycast(origin, Vector3.new(0, -rayDown, 0), params)
+            if result and result.Material == Enum.Material.Water then
+                local d = (Vector3.new(result.Position.X,0,result.Position.Z) - Vector3.new(centerPos.X,0,centerPos.Z)).Magnitude
+                if d < bestDist then
+                    best, bestDist = result.Position, d
                 end
             end
         end
-        -- jika sudah nemu kandidat (misal tepat di center), langsung return
-        if best then
-            return best
-        end
+        if best then return best end
     end
 
-    -- fallback jika tidak ketemu air sama sekali
     return centerPos
 end
 
