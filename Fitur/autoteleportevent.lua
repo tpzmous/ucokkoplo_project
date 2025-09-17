@@ -1,6 +1,5 @@
 --========================================================
 -- Feature: AutoTeleportEvent (Fixed v3) + Hover BodyPosition + Smart Water Teleport
--- Improvement: Prefer indicator (ring/circle/marker) position if available
 --========================================================
 
 local AutoTeleportEvent = {}
@@ -189,95 +188,12 @@ local function indexEvents()
     scan(eventsFolder)
 end
 
--- ===== Helper: cari indikator (ring/circle/marker) di model / parent =====
-local function findIndicatorPosition(model)
-    if not model then return nil end
-
-    local keywords = {
-        "ring","circle","indicator","area","effect","marker","spawn","center",
-        "anchor","point","hit","zone","bubble","glow","vfx","light","spawnpoint"
-    }
-
-    local function hasKeyword(name)
-        name = normName(name or "")
-        for _, kw in ipairs(keywords) do
-            if name:find(kw, 1, true) then
-                return true
-            end
-        end
-        return false
-    end
-
-    -- 1) Cari descendant BasePart yang namanya mengandung keyword atau punya ParticleEmitter/PointLight/SurfaceGui/BillboardGui
-    for _, desc in ipairs(model:GetDescendants()) do
-        if desc:IsA("BasePart") then
-            if hasKeyword(desc.Name) then
-                return (desc:GetPivot and desc:GetPivot().Position) or desc.Position
-            end
-            if desc:FindFirstChildOfClass("ParticleEmitter")
-            or desc:FindFirstChildOfClass("PointLight")
-            or desc:FindFirstChild("BillboardGui")
-            or desc:FindFirstChild("SurfaceGui") then
-                return (desc:GetPivot and desc:GetPivot().Position) or desc.Position
-            end
-        end
-    end
-
-    -- 2) Cari di immediate parent (mis. effect part berada di parent folder yang sama)
-    local parent = model.Parent
-    if parent then
-        for _, sib in ipairs(parent:GetChildren()) do
-            if sib ~= model and sib:IsA("BasePart") then
-                if hasKeyword(sib.Name) then
-                    return (sib.GetPivot and sib:GetPivot().Position) or sib.Position
-                end
-                if sib:FindFirstChildOfClass("ParticleEmitter")
-                or sib:FindFirstChildOfClass("PointLight")
-                or sib:FindFirstChild("BillboardGui")
-                or sib:FindFirstChild("SurfaceGui") then
-                    return (sib.GetPivot and sib:GetPivot().Position) or sib.Position
-                end
-            end
-            -- jika sibling itu model, coba cek di dalamnya juga (non-recursive heavy but safe)
-            if sib ~= model and sib:IsA("Model") then
-                for _, sub in ipairs(sib:GetChildren()) do
-                    if sub:IsA("BasePart") then
-                        if hasKeyword(sub.Name) then
-                            return (sub.GetPivot and sub:GetPivot().Position) or sub.Position
-                        end
-                        if sub:FindFirstChildOfClass("ParticleEmitter")
-                        or sub:FindFirstChildOfClass("PointLight") then
-                            return (sub.GetPivot and sub:GetPivot().Position) or sub.Position
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    return nil
-end
-
 -- ===== Resolve Model Pivot =====
 local function resolveModelPivotPos(model)
-    -- Prioritaskan indikator (ring/circle/marker) jika ada
-    local indicatorPos = findIndicatorPosition(model)
-    if indicatorPos then
-        return indicatorPos
-    end
-
-    -- Fallback ke GetPivot / WorldPivot
     local ok, cf = pcall(function() return model:GetPivot() end)
     if ok and typeof(cf) == "CFrame" then return cf.Position end
     local ok2, cf2 = pcall(function() return model.WorldPivot end)
     if ok2 and typeof(cf2) == "CFrame" then return cf2.Position end
-
-    -- Jika semua gagal, coba cari BasePart di dalam model
-    local part = model:FindFirstChildWhichIsA("BasePart", true)
-    if part then
-        return (part.GetPivot and part:GetPivot().Position) or part.Position
-    end
-
     return nil
 end
 
@@ -400,16 +316,14 @@ local function teleportToTarget(target)
     local tpPos = landing + Vector3.new(0, hoverHeight, 0)
 
     -- Instant teleport once
-    -- IMPORTANT: pass 'landing' as lookAt to make character face the water (landing), not the ship model
-    setCFrameSafely(hrp, tpPos, landing)
+    setCFrameSafely(hrp, tpPos)
     -- Ensure we have a BodyPosition to maintain hover smoothly
     local bp = ensureHoverBP(hrp)
     if bp then
         bp.Position = tpPos
     end
 
-    -- Debugging info for traces (helpful if masih salah)
-    print("[AutoTeleportEvent] Teleported to:", target.name, "target.pos:", tostring(target.pos), "landing:", tostring(landing))
+    print("[AutoTeleportEvent] Teleported to:", target.name, "at", tostring(landing))
     return true
 end
 
