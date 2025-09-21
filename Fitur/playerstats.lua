@@ -27,11 +27,15 @@ function PlayerStats.Init(self, controls)
     end
 
     -- state
-    local currentCaught, currentRarest, currentGold = 0, "None", "0"
+    local currentName   = LocalPlayer.Name
+    local currentCaught = 0
+    local currentRarest = "None"
+    local currentGold   = "0"
 
     local function refreshStats()
         stats_para:SetDesc(
-            "Caught : " .. tostring(currentCaught) ..
+            "Player : " .. tostring(currentName) ..
+            "\nCaught : " .. tostring(currentCaught) ..
             "\nRarest Fish : " .. tostring(currentRarest) ..
             "\nGold : " .. tostring(currentGold)
         )
