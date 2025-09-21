@@ -1,4 +1,3 @@
--- playerstats.lua
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
@@ -26,22 +25,22 @@ function PlayerStats.Init(self, controls)
         return best
     end
 
-    -- state
-    local currentName   = LocalPlayer.Name
+    -- simpan state
     local currentCaught = 0
     local currentRarest = "None"
-    local currentGold   = "0"
+    local currentGold = "0"
+    local playerName = LocalPlayer.Name  -- <<-- Tambahkan nama pemain
 
     local function refreshStats()
         stats_para:SetDesc(
-            "Player : " .. tostring(currentName) ..
+            "Player : " .. tostring(playerName) ..
             "\nCaught : " .. tostring(currentCaught) ..
             "\nRarest Fish : " .. tostring(currentRarest) ..
             "\nGold : " .. tostring(currentGold)
         )
     end
 
-    -- connectors
+    -- === Connectors ===
     local function connectCaught()
         local stats = LocalPlayer:WaitForChild("leaderstats")
         local val = stats:WaitForChild("Caught")
@@ -76,10 +75,11 @@ function PlayerStats.Init(self, controls)
         end
     end
 
-    -- start
+    -- === Start ===
     connectCaught()
     connectRarest()
     connectGold()
+    refreshStats()
 end
 
 return PlayerStats
