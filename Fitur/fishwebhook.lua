@@ -31,14 +31,13 @@ local debounceSend = 0
 
 -- Configuration
 local CONFIG = {
-    DEBUG = true,
+    DEBUG = false,                -- set true only for dev debug output
     WEIGHT_DECIMALS = 2,
     CATCH_WINDOW_SEC = 2.5,
     RARE_WINDOW_SEC = 10.0,
     DEDUP_TTL_SEC = 12.0,
     USE_LARGE_IMAGE = false,
     THUMB_SIZE = "150x150",
-    -- UPDATED: Use new RemoteEvent for fish notifications
     INBOUND_EVENTS = { "RE/ObtainedNewFishNotification" },
     INBOUND_PATTERNS = { "fish", "catch", "legend", "myth", "secret", "reward", "obtained", "notification" },
     ID_NAME_MAP = {},
@@ -65,16 +64,16 @@ local sentCache = {}
 -- ===========================
 local function now() return os.clock() end
 local function log(...) if CONFIG.DEBUG then warn("[FishWebhook]", ...) end end
-local function toIdStr(v) 
-    local n = tonumber(v) 
-    return n and tostring(n) or (v and tostring(v) or nil) 
+local function toIdStr(v)
+    local n = tonumber(v)
+    return n and tostring(n) or (v and tostring(v) or nil)
 end
-local function safeClear(t) 
-    if table and table.clear then 
-        table.clear(t) 
-    else 
-        for k in pairs(t) do t[k] = nil end 
-    end 
+local function safeClear(t)
+    if table and table.clear then
+        table.clear(t)
+    else
+        for k in pairs(t) do t[k] = nil end
+    end
 end
 
 -- ===========================
@@ -94,13 +93,13 @@ local function sendWebhook(payload)
         log("WEBHOOK_URL not set or invalid")
         return
     end
-    
+
     local req = getRequestFn()
-    if not req then 
+    if not req then
         log("No HTTP backend available")
-        return 
+        return
     end
-    
+
     local ok, res = pcall(req, {
         Url = webhookUrl,
         Method = "POST",
@@ -111,12 +110,12 @@ local function sendWebhook(payload)
         },
         Body = HttpService:JSONEncode(payload)
     })
-    
-    if not ok then 
+
+    if not ok then
         log("HTTP request error:", tostring(res))
-        return 
+        return
     end
-    
+
     local code = tonumber(res.StatusCode or res.Status) or 0
     if code < 200 or code >= 300 then
         log("HTTP status:", code, "body:", tostring(res.Body))
@@ -128,7 +127,7 @@ end
 local function httpGet(url)
     local req = getRequestFn()
     if not req then return nil, "no_request_fn" end
-    
+
     local ok, res = pcall(req, {
         Url = url,
         Method = "GET",
@@ -137,14 +136,14 @@ local function httpGet(url)
             ["Accept"] = "application/json,*/*"
         }
     })
-    
+
     if not ok then return nil, tostring(res) end
-    
+
     local code = tonumber(res.StatusCode or res.Status) or 0
     if code < 200 or code >= 300 then
         return nil, "status:" .. tostring(code)
     end
-    
+
     return res.Body or "", nil
 end
 
@@ -166,15 +165,15 @@ end
 local function resolveIconUrl(icon)
     local id = extractAssetId(icon)
     if not id then return nil end
-    
+
     if thumbCache[id] then return thumbCache[id] end
-    
+
     local size = CONFIG.THUMB_SIZE or "420x420"
     local api = string.format(
-        "https://thumbnails.roblox.com/v1/assets?assetIds=%s&size=%s&format=Png&isCircular=false", 
+        "https://thumbnails.roblox.com/v1/assets?assetIds=%s&size=%s&format=Png&isCircular=false",
         id, size
     )
-    
+
     local body, err = httpGet(api)
     if body then
         local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
@@ -188,9 +187,9 @@ local function resolveIconUrl(icon)
     else
         log("Thumbnail API failed:", err or "unknown")
     end
-    
+
     local url = string.format(
-        "https://www.roblox.com/asset-thumbnail/image?assetId=%s&width=420&height=420&format=png", 
+        "https://www.roblox.com/asset-thumbnail/image?assetId=%s&width=420&height=420&format=png",
         id
     )
     thumbCache[id] = url
@@ -203,7 +202,7 @@ end
 local function toAttrMap(inst)
     local a = {}
     if not inst or not inst.GetAttributes then return a end
-    
+
     for k, v in pairs(inst:GetAttributes()) do a[k] = v end
     for _, ch in ipairs(inst:GetChildren()) do
         if ch:IsA("ValueBase") then a[ch.Name] = ch.Value end
@@ -213,7 +212,7 @@ end
 
 local function detectItemsRoot()
     if itemsRoot and itemsRoot.Parent then return itemsRoot end
-    
+
     local function findPath(root, path)
         local cur = root
         for part in string.gmatch(path, "[^/]+") do
@@ -221,16 +220,16 @@ local function detectItemsRoot()
         end
         return cur
     end
-    
+
     local hints = {"Items", "GameData/Items", "Data/Items"}
     for _, h in ipairs(hints) do
         local r = findPath(ReplicatedStorage, h)
-        if r then 
+        if r then
             itemsRoot = r
-            break 
+            break
         end
     end
-    
+
     itemsRoot = itemsRoot or ReplicatedStorage:FindFirstChild("Items") or ReplicatedStorage
     return itemsRoot
 end
@@ -238,15 +237,15 @@ end
 local function safeRequire(ms)
     local ok, data = pcall(require, ms)
     if not ok or type(data) ~= "table" then return nil end
-    
+
     local D = data.Data or {}
     if D.Type ~= "Fishes" then return nil end
-    
+
     local chance = nil
     if type(data.Probability) == "table" then
         chance = data.Probability.Chance
     end
-    
+
     return {
         id = toIdStr(D.Id),
         name = D.Name,
@@ -260,7 +259,7 @@ end
 
 local function buildLightIndex()
     if indexBuilt then return end
-    
+
     local root = detectItemsRoot()
     for _, d in ipairs(root:GetDescendants()) do
         if d:IsA("ModuleScript") then
@@ -278,7 +277,7 @@ local function ensureMetaById(idStr)
     idStr = toIdStr(idStr)
     if not idStr then return nil end
     if metaById[idStr] then return metaById[idStr] end
-    
+
     buildLightIndex()
     local ms = moduleById[idStr]
     if ms and not scannedSet[ms] then
@@ -289,7 +288,7 @@ local function ensureMetaById(idStr)
             return meta
         end
     end
-    
+
     -- Lazy scan until found
     local root = detectItemsRoot()
     for _, d in ipairs(root:GetDescendants()) do
@@ -303,7 +302,7 @@ local function ensureMetaById(idStr)
             end
         end
     end
-    
+
     return nil
 end
 
@@ -312,7 +311,7 @@ end
 -- ===========================
 local function absorbQuick(info, t)
     if type(t) ~= "table" then return end
-    
+
     info.id = info.id or t.Id or t.ItemId or t.TypeId or t.FishId
     info.weight = info.weight or t.Weight or t.Mass or t.Kg or t.WeightKg
     info.chance = info.chance or t.Chance or t.Probability
@@ -324,7 +323,7 @@ local function absorbQuick(info, t)
     info.shiny = info.shiny or t.Shiny
     info.favorited = info.favorited or t.Favorited or t.Favorite
     info.uuid = info.uuid or t.UUID or t.Uuid
-    
+
     if t.Data and type(t.Data) == "table" then
         absorbQuick(info, t.Data)
     end
@@ -336,13 +335,7 @@ end
 -- UPDATED: New decoder for RE/ObtainedNewFishNotification
 local function decode_RE_ObtainedNewFishNotification(packed)
     local info = {}
-    
-    -- Berdasarkan gambar debug, args biasanya berisi:
-    -- args[1] = table dengan data ikan (Shiny, Weight, VariantSeed, VariantId, dll)
-    -- args[2] = mungkin additional data atau InventoryItem
-    -- args[3] = ItemId
-    -- args[4] = possibly more metadata
-    
+
     if CONFIG.DEBUG then
         log("Decoding ObtainedNewFishNotification with", packed.n or #packed, "args")
         for i = 1, math.min(packed.n or #packed, 4) do
@@ -351,8 +344,7 @@ local function decode_RE_ObtainedNewFishNotification(packed)
             end
         end
     end
-    
-    -- Process each argument
+
     for i = 1, packed.n or #packed do
         local arg = packed[i]
         if type(arg) == "table" then
@@ -365,8 +357,7 @@ local function decode_RE_ObtainedNewFishNotification(packed)
             absorbQuick(info, toAttrMap(arg))
         end
     end
-    
-    -- Get metadata from item database
+
     if info.id then
         local meta = ensureMetaById(toIdStr(info.id))
         if meta then
@@ -376,17 +367,16 @@ local function decode_RE_ObtainedNewFishNotification(packed)
             info.icon = info.icon or meta.icon
         end
     end
-    
-    -- Fallback name lookup
+
     local idS = info.id and toIdStr(info.id)
     if idS and not info.name and CONFIG.ID_NAME_MAP[idS] then
         info.name = CONFIG.ID_NAME_MAP[idS]
     end
-    
+
     if CONFIG.DEBUG then
         log("Decoded fish info:", info.name or "Unknown", "ID:", info.id or "?", "Weight:", info.weight or "?")
     end
-    
+
     return next(info) and info or nil
 end
 
@@ -394,7 +384,7 @@ end
 local function decode_RE_FishCaught(packed)
     local info = {}
     local a1, a2 = packed[1], packed[2]
-    
+
     if type(a1) == "table" then
         absorbQuick(info, a1)
         if type(a2) == "table" then absorbQuick(info, a2) end
@@ -405,7 +395,7 @@ local function decode_RE_FishCaught(packed)
         absorbQuick(info, toAttrMap(a1))
         if type(a2) == "table" then absorbQuick(info, a2) end
     end
-    
+
     if info.id then
         local meta = ensureMetaById(toIdStr(info.id))
         if meta then
@@ -415,12 +405,12 @@ local function decode_RE_FishCaught(packed)
             info.icon = info.icon or meta.icon
         end
     end
-    
+
     local idS = info.id and toIdStr(info.id)
     if idS and not info.name and CONFIG.ID_NAME_MAP[idS] then
         info.name = CONFIG.ID_NAME_MAP[idS]
     end
-    
+
     return next(info) and info or nil
 end
 
@@ -431,7 +421,6 @@ local function decodeInboundEvent(eventName, packed)
     elseif eventName == "RE/FishCaught" then
         return decode_RE_FishCaught(packed)
     else
-        -- Try both decoders for unknown events
         local info = decode_RE_ObtainedNewFishNotification(packed)
         if not info then
             info = decode_RE_FishCaught(packed)
@@ -489,7 +478,7 @@ local function formatVariant(info)
     if info.variantId and info.variantId ~= "" then
         table.insert(parts, "Variant: " .. tostring(info.variantId))
     end
-    
+
     if info.shiny then
         table.insert(parts, "✨ SHINY")
     end
@@ -514,7 +503,7 @@ local function sigFromInfo(info)
     local variant = tostring(info.variantId or "")
     local shiny = tostring(info.shiny or false)
     local uuid = tostring(info.uuid or "")
-    
+
     local mut = ""
     if type(info.mutations) == "table" then
         local keys = {}
@@ -522,7 +511,7 @@ local function sigFromInfo(info)
             table.insert(keys, tostring(k))
         end
         table.sort(keys)
-        
+
         local parts = {}
         for _, k in ipairs(keys) do
             table.insert(parts, k .. "=" .. tostring(info.mutations[k]))
@@ -531,7 +520,7 @@ local function sigFromInfo(info)
     else
         mut = tostring(info.mutation or "")
     end
-    
+
     return table.concat({id, wt, tier, ch, variant, shiny, uuid, mut}, "|")
 end
 
@@ -543,7 +532,7 @@ local function shouldSend(sig)
             sentCache[k] = nil
         end
     end
-    
+
     if sentCache[sig] then return false end
     sentCache[sig] = t
     return true
@@ -552,23 +541,33 @@ end
 -- ===========================
 -- FISH FILTER FUNCTIONS
 -- ===========================
+-- IMPORTANT: only send when selectedFishTypes contains the tier name.
+-- If selectedFishTypes is empty -> send nothing.
 local function shouldSendFish(info)
-    -- Check if fish type is selected for webhook
-    if not info.name then return false end
-    
-    -- If no fish types selected, send all
-    if not selectedFishTypes or next(selectedFishTypes) == nil then
-        return true
+    if not info then return false end
+    -- Determine tier name (prefer numeric tier -> name)
+    local tierName = nil
+    if info.tier then
+        tierName = getTierName(info.tier)
     end
-    
-    -- Check if fish name or tier matches selected types
+    -- If still nil, try to map from info.name using meta (rare)
+    if not tierName and info.id then
+        local meta = ensureMetaById(toIdStr(info.id))
+        if meta and meta.tier then tierName = getTierName(meta.tier) end
+    end
+    if not tierName then return false end
+
+    if not selectedFishTypes or next(selectedFishTypes) == nil then
+        -- If user hasn't selected anything -> do NOT send
+        return false
+    end
+
+    local lowTier = tierName:lower()
     for selectedType, _ in pairs(selectedFishTypes) do
-        if info.name:lower():find(selectedType:lower()) or 
-           getTierName(info.tier):lower() == selectedType:lower() then
+        if lowTier == tostring(selectedType):lower() then
             return true
         end
     end
-    
     return false
 end
 
@@ -579,24 +578,24 @@ local function sendEmbed(info, origin)
     -- Soft debounce for burst spam with different signatures
     if now() - debounceSend < 0.15 then return end
     debounceSend = now()
-    
+
     -- Check if we should send this fish
     if not shouldSendFish(info) then
         log("Fish not in selected types, skipping:", info.name or "Unknown")
         return
     end
-    
+
     local sig = sigFromInfo(info)
     if not shouldSend(sig) then
         log("Dedup suppress for sig:", sig)
         return
     end
-    
+
     local fishName = info.name or "Unknown Fish"
     if fishName == "Unknown Fish" and info.id and metaById[toIdStr(info.id)] and metaById[toIdStr(info.id)].name then
         fishName = metaById[toIdStr(info.id)].name
     end
-    
+
     local imageUrl = nil
     if info.icon then
         imageUrl = resolveIconUrl(info.icon)
@@ -608,58 +607,50 @@ local function sendEmbed(info, origin)
     if not imageUrl and info.id then
         imageUrl = resolveIconUrl(info.id)
     end
-    
-    if CONFIG.DEBUG then 
-        log("Image URL:", tostring(imageUrl)) 
+
+    if CONFIG.DEBUG then
+        log("Image URL:", tostring(imageUrl))
     end
 
-    -- Create "box" formatting for Discord embed (inline code)
-    local function box(v)
-        v = v == nil and "Unknown" or tostring(v)
-        v = v:gsub("```", "ˋ``") -- Replace backticks to avoid breaking formatting
-        return string.format("```%s```", v)
-    end
+    local tierName = getTierName(info.tier)
+    local shinyStar = info.shiny and "✨ " or ""
 
-    local function hide(v)
-    v = v == nil and "Unknown" or tostring(v)
-    v = v:gsub("||", "|​|") -- Add zero-width space to prevent breaking
-    return string.format("||%s||", v)
-    end
-
-    -- UPDATED: Enhanced embed with new data
     local embed = {
-        title = (info.shiny and "✨ " or "🎣 ") .. "New Catch ",
-        description = string.format("**Player:** %s", hide(LocalPlayer.Name)),
-        color = info.shiny and 0xFFD700 or 0x87CEEB, -- Gold for shiny, light blue for normal
+        title = shinyStar .. "🎣 New " .. tierName .. " Catch!",
+        description = string.format("**Player:** %s", LocalPlayer and LocalPlayer.Name or "Unknown"),
+        color = info.shiny and 0xFFD700 or 0x1E90FF,
         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
         footer = { text = ".devlogic | Fish-It Notifier" },
         fields = {
-            { name = "Fish Name 🐟",   value = box(fishName),                              inline = false },
-            { name = "⚖️ Weight",      value = box(toKg(info.weight)),                     inline = true  },
-            { name = "🎲 Chance",       value = box(fmtChanceOneInFromNumber(info.chance)), inline = true  },
-            { name = "💎 Rarity",       value = box(getTierName(info.tier)),                inline = true  },
-            { name = "🧬 Mutation",      value = box(formatVariant(info)),                   inline = false },
+            { name = "🐟 Fish",   value = (fishName and tostring(fishName) or "Unknown"), inline = false },
+            { name = "⚖️ Weight", value = (toKg(info.weight) or "Unknown"), inline = true },
+            { name = "🎲 Chance", value = (fmtChanceOneInFromNumber(info.chance) or "Unknown"), inline = true },
+            { name = "💎 Rarity", value = tostring(tierName), inline = true },
         }
     }
 
-        -- Add UUID field if available
-    if info.uuid and info.uuid ~= "" then
-        table.insert(embed.fields, { name = "🆔 UUID", value = box(info.uuid), inline = true })
+    local mut = formatVariant(info)
+    if mut and mut ~= "None" then
+        table.insert(embed.fields, { name = "🧬 Variant/Mutation", value = mut, inline = false })
     end
-    
+
+    if info.uuid and info.uuid ~= "" then
+        table.insert(embed.fields, { name = "🆔 UUID", value = tostring(info.uuid), inline = true })
+    end
+
     if imageUrl then
         if CONFIG.USE_LARGE_IMAGE then
-            embed.image = {url = imageUrl}
+            embed.image = { url = imageUrl }
         else
-            embed.thumbnail = {url = imageUrl}
+            embed.thumbnail = { url = imageUrl }
         end
     end
-    
-    sendWebhook({ 
-        username = ".devlogic ", 
-        embeds = {embed} 
+
+    sendWebhook({
+        username = ".devlogic",
+        embeds = { embed }
     })
-    
+
     -- Clean up to prevent resend from late callbacks
     safeClear(lastInbound)
     safeClear(recentAdds)
@@ -672,24 +663,25 @@ end
 local function onCatchWindow()
     if onCatchWindowBusy then return end
     onCatchWindowBusy = true
-    
+
     local function finally()
         onCatchWindowBusy = false
     end
-    
+
     -- Try latest event in quick window
     for i = #lastInbound, 1, -1 do
         local hit = lastInbound[i]
         if now() - hit.t <= CONFIG.CATCH_WINDOW_SEC then
             local info = decodeInboundEvent(hit.name, hit.args)
             if info and (info.id or info.name) then
+                -- sendEmbed will itself check shouldSendFish
                 sendEmbed(info, "OnClientEvent:" .. hit.name)
                 finally()
                 return
             end
         end
     end
-    
+
     -- Rare watch active?
     if now() <= rareWatchUntil then
         -- Try older events in rare window
@@ -706,7 +698,7 @@ local function onCatchWindow()
                 break
             end
         end
-        
+
         -- Correlate with Backpack adds in rare window
         for inst, ts in pairs(recentAdds) do
             if inst.Parent == Backpack and now() - ts <= CONFIG.RARE_WINDOW_SEC then
@@ -714,7 +706,7 @@ local function onCatchWindow()
                 local id = a.Id or a.ItemId or a.TypeId or a.FishId
                 local meta = id and ensureMetaById(toIdStr(id)) or nil
                 if meta then
-                    sendEmbed({
+                    local candidate = {
                         id = id,
                         name = meta.name,
                         tier = meta.tier,
@@ -726,18 +718,24 @@ local function onCatchWindow()
                         variantSeed = a.VariantSeed,
                         shiny = a.Shiny,
                         uuid = a.UUID
-                    }, "Backpack(RARE):" .. inst.Name)
-                    finally()
-                    return
+                    }
+                    -- CHECK FILTER: only send if tier matches selectedFishTypes
+                    if shouldSendFish(candidate) then
+                        sendEmbed(candidate, "Backpack(RARE):" .. inst.Name)
+                        finally()
+                        return
+                    else
+                        log("Backpack candidate skipped by filter:", candidate.name or tostring(id))
+                    end
                 end
             end
         end
     end
-    
+
     if CONFIG.DEBUG then
         log("No info in window; skipped")
     end
-    
+
     finally()
 end
 
@@ -757,12 +755,12 @@ end
 
 local function connectInbound()
     local ge = ReplicatedStorage
-    
+
     local function maybeConnect(d)
         if d:IsA("RemoteEvent") and wantByName(d.Name) then
             table.insert(connections, d.OnClientEvent:Connect(function(...)
                 local packed = table.pack(...)
-                table.insert(lastInbound, {t = now(), name = d.Name, args = packed})
+                table.insert(lastInbound, { t = now(), name = d.Name, args = packed })
                 if CONFIG.DEBUG then
                     log("Inbound:", d.Name, "argc=", packed.n or 0)
                 end
@@ -771,21 +769,21 @@ local function connectInbound()
             log("Hooked:", d:GetFullName())
         end
     end
-    
+
     for _, d in ipairs(ge:GetDescendants()) do
         maybeConnect(d)
     end
-    
+
     table.insert(connections, ge.DescendantAdded:Connect(maybeConnect))
 end
 
 local function connectLeaderstatsTrigger()
     local ls = LocalPlayer:FindFirstChild("leaderstats")
     if not ls then return end
-    
+
     local Caught = ls:FindFirstChild("Caught")
     local Data = Caught and (Caught:FindFirstChild("Data") or Caught)
-    
+
     if Data and Data:IsA("ValueBase") then
         table.insert(connections, Data.Changed:Connect(function()
             rareWatchUntil = now() + CONFIG.RARE_WINDOW_SEC
@@ -804,7 +802,7 @@ local function connectBackpackLight()
             log("Backpack +", inst.Name)
         end
     end))
-    
+
     table.insert(connections, Backpack.ChildRemoved:Connect(function(inst)
         recentAdds[inst] = nil
     end))
@@ -815,55 +813,55 @@ end
 -- ===========================
 function FishWebhookFeature:Init(guiControls)
     controls = guiControls or {}
-    
+
     detectItemsRoot()
     buildLightIndex()
-    
-    print("[FishWebhook] Initialized with new detector (RE/ObtainedNewFishNotification)")
+
+    log("Initialized with new detector (RE/ObtainedNewFishNotification)")
     return true
 end
 
 function FishWebhookFeature:Start(config)
     if isRunning then return end
-    
+
     webhookUrl = config.webhookUrl or ""
     selectedFishTypes = config.selectedFishTypes or {}
-    
+
     if not webhookUrl or webhookUrl == "" then
-        warn("[FishWebhook] Cannot start - webhook URL not set")
+        log("Cannot start - webhook URL not set")
         return false
     end
-    
+
     isRunning = true
-    
+
     connectInbound()
     connectLeaderstatsTrigger()
     connectBackpackLight()
-    
-    print("[FishWebhook] Started with URL:", webhookUrl:sub(1, 50) .. "...")
-    print("[FishWebhook] Selected fish types:", HttpService:JSONEncode(selectedFishTypes))
-    print("[FishWebhook] Using detector: RE/ObtainedNewFishNotification")
-    
+
+    log("Started with URL:", webhookUrl:sub(1, 50) .. "...")
+    log("Selected fish types:", HttpService:JSONEncode(selectedFishTypes))
+    log("Using detector: RE/ObtainedNewFishNotification")
+
     return true
 end
 
 function FishWebhookFeature:Stop()
     if not isRunning then return end
-    
+
     isRunning = false
-    
+
     -- Disconnect all connections
     for _, conn in ipairs(connections) do
         pcall(function() conn:Disconnect() end)
     end
     connections = {}
-    
+
     -- Clear state
     safeClear(lastInbound)
     safeClear(recentAdds)
     rareWatchUntil = 0
-    
-    print("[FishWebhook] Stopped")
+
+    log("Stopped")
 end
 
 function FishWebhookFeature:SetWebhookUrl(url)
@@ -878,13 +876,13 @@ end
 
 function FishWebhookFeature:TestWebhook(message)
     if not webhookUrl or webhookUrl == "" then
-        warn("[FishWebhook] Cannot test - webhook URL not set")
+        log("Cannot test - webhook URL not set")
         return false
     end
-    
-    sendWebhook({ 
-        username = ".devlogic Fish Notifier v2", 
-        content = message or "🐟 Webhook test from Fish-It script (Updated Detector)" 
+
+    sendWebhook({
+        username = ".devlogic Fish Notifier v2",
+        content = message or "🐟 Webhook test from Fish-It script (Updated Detector)"
     })
     return true
 end
@@ -902,10 +900,10 @@ function FishWebhookFeature:GetStatus()
 end
 
 function FishWebhookFeature:Cleanup()
-    print("[FishWebhook] Cleaning up...")
+    log("Cleaning up...")
     self:Stop()
     controls = {}
-    
+
     -- Clear all caches
     safeClear(moduleById)
     safeClear(metaById)
@@ -942,7 +940,7 @@ function FishWebhookFeature:SimulateFishCatch(testData)
         variantId = "Galaxy",
         variantSeed = 1757126016
     }
-    
+
     sendEmbed(testData, "SIMULATED_TEST")
 end
 
