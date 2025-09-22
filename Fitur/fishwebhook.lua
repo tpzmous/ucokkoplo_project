@@ -649,7 +649,7 @@ local function label(icon, text) return string.format("%s %s", icon or "", text 
         description = string.format("**Player:** %s", hide(LocalPlayer.Name)),
         color = info.shiny and 0xFFD700 or 0x030303, -- Gold for shiny, light blue for normal
         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        footer = { text = "NoctisHub | Fish-It Notifier" },fields = {
+        footer = { text = "UcokKoplo" },fields = {
             { name = label(EMOJI.fish, "Fish Name"),  value = box(fishName),                   inline = false },
             { name = label(EMOJI.weight, "Weight"),   value = box(toKg(info.weight)),                           inline = true  },
             { name = label(EMOJI.chance, "Chance"),   value = box(fmtChanceOneInFromNumber(info.chance)),                        inline = true  },
@@ -672,7 +672,7 @@ local function label(icon, text) return string.format("%s %s", icon or "", text 
     end
     
     sendWebhook({ 
-        username = "Noctis Notifier ", 
+        username = "INFO IKAN", 
         embeds = {embed} 
     })
     
