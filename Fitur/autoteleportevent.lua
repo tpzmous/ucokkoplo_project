@@ -213,49 +213,37 @@ end
 local function scanAllActiveProps()
     local activePropsList = {}
 
-    for _, child in ipairs(Workspace:GetChildren()) do
-        if child:IsA("Model") or child:IsA("Folder") then
-            if child.Name == "Props" or child.Name:find("Props") then
-                for _, desc in ipairs(child:GetDescendants()) do
-                    if desc:IsA("Model") then
-                        local model = desc
-                        local pos = resolveModelPivotPos(model)
-                        if pos then
-                            -- cek nama model + nama parent chain
-                            local chainName = {}
-                            local p = model
-                            while p do
-                                table.insert(chainName, normName(p.Name))
-                                p = p.Parent
-                                if p == Workspace then break end
-                            end
-                            local isEventish = false
-                            for _, key in ipairs(chainName) do
-                                if validEventName[key] then
-                                    isEventish = true
-                                    break
-                                end
-                            end
-
-                            if isEventish then
-                                local repName = model.Parent and model.Parent.Name or model.Name
-                                table.insert(activePropsList, {
-                                    model     = model,
-                                    name      = repName,
-                                    nameKey   = normName(repName),
-                                    pos       = pos,
-                                    propsName = child.Name
-                                })
-                            end
+    local function scan(folder)
+        for _, child in ipairs(folder:GetChildren()) do
+            if string.lower(child.Name) == "props" then
+                for _, evt in ipairs(child:GetChildren()) do
+                    if evt:IsA("Model") then
+                        local ok, pos = pcall(function()
+                            return evt:GetPivot().Position
+                        end)
+                        if ok and pos then
+                            table.insert(activePropsList, {
+                                model     = evt,
+                                name      = evt.Name,
+                                nameKey   = normName(evt.Name),
+                                pos       = pos,
+                                propsName = "Props"
+                            })
+                            print(string.format("[AutoTeleportEvent] Found Event: %s @ %s", evt.Name, tostring(pos)))
                         end
                     end
                 end
             end
+            if child:IsA("Folder") or child:IsA("Model") then
+                scan(child)
+            end
         end
     end
 
+    scan(Workspace)
     return activePropsList
 end
+
 
 
 -- ===== Match terhadap pilihan user =====
