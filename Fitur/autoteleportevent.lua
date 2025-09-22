@@ -169,37 +169,24 @@ local function saveCurrentPosition()
 end
 
 -- ===== Index Events from ReplicatedStorage.Events =====
--- ===== Index Events from ReplicatedStorage.Events =====
 local function indexEvents()
     table.clear(validEventName)
     if not eventsFolder then return end
-
     local function scan(folder)
         for _, child in ipairs(folder:GetChildren()) do
             if child:IsA("ModuleScript") then
-                -- coba require
                 local ok, data = pcall(require, child)
                 if ok and type(data) == "table" and data.Name then
                     validEventName[normName(data.Name)] = true
                 end
                 validEventName[normName(child.Name)] = true
             elseif child:IsA("Folder") then
-                -- folder juga dianggap event container
-                validEventName[normName(child.Name)] = true
                 scan(child)
-            elseif child:IsA("RemoteEvent") or child:IsA("BindableEvent") then
-                -- langsung tambahkan
-                validEventName[normName(child.Name)] = true
-            else
-                -- fallback: semua instance dalam Events dicatat
-                validEventName[normName(child.Name)] = true
             end
         end
     end
-
     scan(eventsFolder)
 end
-
 
 -- ===== Resolve Model Pivot =====
 local function resolveModelPivotPos(model)
@@ -210,39 +197,69 @@ local function resolveModelPivotPos(model)
     return nil
 end
 
+-- ===== Scan All Props in Workspace =====
 local function scanAllActiveProps()
     local activePropsList = {}
 
-    local function scan(folder)
-        for _, child in ipairs(folder:GetChildren()) do
-            if string.lower(child.Name) == "props" then
-                for _, evt in ipairs(child:GetChildren()) do
-                    if evt:IsA("Model") then
-                        local ok, pos = pcall(function()
-                            return evt:GetPivot().Position
-                        end)
-                        if ok and pos then
-                            table.insert(activePropsList, {
-                                model     = evt,
-                                name      = evt.Name,
-                                nameKey   = normName(evt.Name),
-                                pos       = pos,
-                                propsName = "Props"
-                            })
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if child:IsA("Model") or child:IsA("Folder") then
+            local childName = child.Name
+            if childName == "Props" or childName:find("Props") then
+                -- Scan semua isi Props
+                for _, desc in ipairs(child:GetDescendants()) do
+                    if desc:IsA("Model") then
+                        local model = desc
+
+                        -- Cari nama event yang lebih “asli”
+                        local eventName
+                        if model:GetAttribute("EventName") then
+                            eventName = model:GetAttribute("EventName")
+                        else
+                            for _, v in ipairs(model:GetChildren()) do
+                                if v:IsA("StringValue") or v:IsA("ValueBase") then
+                                    eventName = v.Value
+                                    break
+                                end
+                            end
+                        end
+                        eventName = eventName or model.Name
+                        local mKey = normName(eventName)
+                        local pKey = model.Parent and normName(model.Parent.Name) or nil
+
+                        -- Cek apakah sesuai daftar event
+                        local isEventish =
+                            (validEventName[mKey] == true) or
+                            (pKey and validEventName[pKey] == true)
+
+                        -- Fallback: kalau model punya EventName tapi tidak ada di daftar, tetap dianggap event
+                        if not isEventish and eventName and eventName ~= model.Name then
+                            isEventish = true
+                        end
+
+                        if isEventish then
+                            local pos = resolveModelPivotPos(model)
+                            if pos then
+                                local repName = eventName or (model.Parent and model.Parent.Name) or model.Name
+                                table.insert(activePropsList, {
+                                    model     = model,
+                                    name      = repName,
+                                    nameKey   = normName(repName),
+                                    pos       = pos,
+                                    propsName = childName
+                                })
+                                -- Debug opsional
+                                print(string.format("[DEBUG] Event terdeteksi: %s @ (%.1f, %.1f, %.1f)",
+                                    repName, pos.X, pos.Y, pos.Z))
+                            end
                         end
                     end
                 end
             end
-            if child:IsA("Folder") or child:IsA("Model") then
-                scan(child)
-            end
         end
     end
 
-    scan(Workspace)
     return activePropsList
 end
-
 
 
 -- ===== Match terhadap pilihan user =====
