@@ -169,24 +169,37 @@ local function saveCurrentPosition()
 end
 
 -- ===== Index Events from ReplicatedStorage.Events =====
+-- ===== Index Events from ReplicatedStorage.Events =====
 local function indexEvents()
     table.clear(validEventName)
     if not eventsFolder then return end
+
     local function scan(folder)
         for _, child in ipairs(folder:GetChildren()) do
             if child:IsA("ModuleScript") then
+                -- coba require
                 local ok, data = pcall(require, child)
                 if ok and type(data) == "table" and data.Name then
                     validEventName[normName(data.Name)] = true
                 end
                 validEventName[normName(child.Name)] = true
             elseif child:IsA("Folder") then
+                -- folder juga dianggap event container
+                validEventName[normName(child.Name)] = true
                 scan(child)
+            elseif child:IsA("RemoteEvent") or child:IsA("BindableEvent") then
+                -- langsung tambahkan
+                validEventName[normName(child.Name)] = true
+            else
+                -- fallback: semua instance dalam Events dicatat
+                validEventName[normName(child.Name)] = true
             end
         end
     end
+
     scan(eventsFolder)
 end
+
 
 -- ===== Resolve Model Pivot =====
 local function resolveModelPivotPos(model)
@@ -197,36 +210,41 @@ local function resolveModelPivotPos(model)
     return nil
 end
 
--- ===== Scan All Props in Workspace =====
 local function scanAllActiveProps()
     local activePropsList = {}
-    
-    -- Scan semua child di Workspace yang nama mengandung "Props" atau langsung bernama Props
+
     for _, child in ipairs(Workspace:GetChildren()) do
         if child:IsA("Model") or child:IsA("Folder") then
-            local childName = child.Name
-            if childName == "Props" or childName:find("Props") then
-                -- Ini adalah Props folder, scan isinya
+            if child.Name == "Props" or child.Name:find("Props") then
                 for _, desc in ipairs(child:GetDescendants()) do
                     if desc:IsA("Model") then
                         local model = desc
-                        local mKey = normName(model.Name)
-                        local pKey = model.Parent and normName(model.Parent.Name) or nil
-                        
-                        local isEventish = 
-                            (validEventName[mKey] == true) or
-                            (pKey and validEventName[pKey] == true)
-                        
-                        if isEventish then
-                            local pos = resolveModelPivotPos(model)
-                            if pos then
+                        local pos = resolveModelPivotPos(model)
+                        if pos then
+                            -- cek nama model + nama parent chain
+                            local chainName = {}
+                            local p = model
+                            while p do
+                                table.insert(chainName, normName(p.Name))
+                                p = p.Parent
+                                if p == Workspace then break end
+                            end
+                            local isEventish = false
+                            for _, key in ipairs(chainName) do
+                                if validEventName[key] then
+                                    isEventish = true
+                                    break
+                                end
+                            end
+
+                            if isEventish then
                                 local repName = model.Parent and model.Parent.Name or model.Name
                                 table.insert(activePropsList, {
                                     model     = model,
                                     name      = repName,
                                     nameKey   = normName(repName),
                                     pos       = pos,
-                                    propsName = childName -- track which props this belongs to
+                                    propsName = child.Name
                                 })
                             end
                         end
@@ -235,9 +253,10 @@ local function scanAllActiveProps()
             end
         end
     end
-    
+
     return activePropsList
 end
+
 
 -- ===== Match terhadap pilihan user =====
 local function matchesSelection(nameKey)
