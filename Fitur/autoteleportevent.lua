@@ -197,37 +197,69 @@ local function resolveModelPivotPos(model)
     return nil
 end
 
+local function buildValidEventNames()
+    local eventsFolder = ReplicatedStorage:FindFirstChild("Events")
+    if not eventsFolder then
+        warn("[AutoTeleportEvent] Tidak ada folder 'Events' di ReplicatedStorage")
+        return {}
+    end
+
+    local valid = {}
+
+    local function scan(folder)
+        for _, child in ipairs(folder:GetChildren()) do
+            if child:IsA("ModuleScript") then
+                local ok, data = pcall(require, child)
+                local name = nil
+                if ok and data and data.Name then
+                    name = data.Name
+                else
+                    name = child.Name
+                end
+                valid[normName(name)] = true
+            elseif child:IsA("Folder") then
+                scan(child)
+            end
+        end
+    end
+
+    scan(eventsFolder)
+    return valid
+end
+
+
 -- ===== Scan All Props in Workspace =====
 local function scanAllActiveProps()
     local activePropsList = {}
-    
-    -- Scan semua child di Workspace yang nama mengandung "Props" atau langsung bernama Props
+    local validEventName = buildValidEventNames() -- sudah ada kan di sistem kamu
+
     for _, child in ipairs(Workspace:GetChildren()) do
         if child:IsA("Model") or child:IsA("Folder") then
-            local childName = child.Name
-            if childName == "Props" or childName:find("Props") then
-                -- Ini adalah Props folder, scan isinya
+            if string.find(string.lower(child.Name), "props") then
                 for _, desc in ipairs(child:GetDescendants()) do
                     if desc:IsA("Model") then
-                        local model = desc
-                        local mKey = normName(model.Name)
-                        local pKey = model.Parent and normName(model.Parent.Name) or nil
-                        
-                        local isEventish = 
-                            (validEventName[mKey] == true) or
-                            (pKey and validEventName[pKey] == true)
-                        
-                        if isEventish then
-                            local pos = resolveModelPivotPos(model)
-                            if pos then
-                                local repName = model.Parent and model.Parent.Name or model.Name
+                        local eventName = resolveEventNameFromModel(desc)
+                        local normKey = normName(eventName)
+                        local pos = resolveModelPivotPos(desc)
+
+                        if pos then
+                            if validEventName[normKey] then
                                 table.insert(activePropsList, {
-                                    model     = model,
-                                    name      = repName,
-                                    nameKey   = normName(repName),
+                                    model     = desc,
+                                    name      = eventName,
+                                    nameKey   = normKey,
                                     pos       = pos,
-                                    propsName = childName -- track which props this belongs to
+                                    propsName = child.Name
                                 })
+                                print(string.format(
+                                    "[AutoTeleportEvent] Event VALID: %s @ Vector3(%.2f, %.2f, %.2f)",
+                                    eventName, pos.X, pos.Y, pos.Z
+                                ))
+                            else
+                                warn(string.format(
+                                    "[AutoTeleportEvent] Event di Props '%s' → '%s' tidak cocok daftar resmi",
+                                    desc.Name, eventName
+                                ))
                             end
                         end
                     end
@@ -235,7 +267,7 @@ local function scanAllActiveProps()
             end
         end
     end
-    
+
     return activePropsList
 end
 
