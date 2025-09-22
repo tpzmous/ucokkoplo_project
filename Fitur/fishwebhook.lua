@@ -38,7 +38,7 @@ local debounceSend = 0
 
 -- Configuration
 local CONFIG = {
-    DEBUG = true,
+    DEBUG = false,
     WEIGHT_DECIMALS = 2,
     CATCH_WINDOW_SEC = 2.5,
     RARE_WINDOW_SEC = 10.0,
