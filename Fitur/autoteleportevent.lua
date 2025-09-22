@@ -1,10 +1,23 @@
 --========================================================
--- Feature: AutoTeleportEvent (Fixed v3) + Hover BodyPosition + Smart Water Teleport
+-- Feature: AutoTeleportEvent (Extended v4.1)
+-- Description:
+--   - Teleport otomatis ke Event di Props
+--   - Hover stabil dengan BodyPosition
+--   - Smart water landing (cari posisi air terdekat)
+--   - Save & restore posisi sebelum teleport
+--   - Event filtering by priority
+--   - Workspace monitoring (Props muncul/hilang)
+--   - Clean lifecycle (Init, Start, Stop, Cleanup)
+--
+-- Catatan:
+--   Versi ini lebih panjang dari versi lama (>=690 lines),
+--   ditambah komentar dan logging agar gampang debug.
 --========================================================
 
 local AutoTeleportEvent = {}
 AutoTeleportEvent.__index = AutoTeleportEvent
 
+-- ===== Services =====
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService        = game:GetService("RunService")
@@ -14,33 +27,38 @@ local LocalPlayer = Players.LocalPlayer
 
 -- ===== State =====
 local running          = false
-local hbConn           = nil         -- polling ringan
-local charConn         = nil
-local propsAddedConn   = nil         -- jika Props di-recreate
-local propsRemovedConn = nil         -- detect props removal
-local workspaceConn    = nil         -- scan workspace changes
+local hbConn           = nil         -- Heartbeat connection
+local charConn         = nil         -- CharacterAdded listener
+local propsAddedConn   = nil         -- Props added listener
+local propsRemovedConn = nil         -- Props removed listener
+local workspaceConn    = nil         -- Workspace descendant listener
 local eventsFolder     = nil         -- ReplicatedStorage.Events
 
-local selectedPriorityList = {}      -- <<< urutan prioritas (array)
-local selectedSet           = {}     -- untuk cocokkan cepat (dict)
+local selectedPriorityList = {}      -- urutan prioritas (array)
+local selectedSet           = {}     -- dictionary (fast lookup)
 local hoverHeight           = 15
-local savedPosition         = nil    -- HARD save position before any teleport
+local savedPosition         = nil    -- save posisi player sebelum teleport pertama
 local currentTarget         = nil    -- { model, name, nameKey, pos, propsName }
-local lastKnownActiveProps  = {}     -- track active props for cleanup detection
+local lastKnownActiveProps  = {}     -- props yang aktif terakhir
 
--- Cache nama event valid (dari ReplicatedStorage.Events)
+-- Cache nama event valid
 local validEventName = {}            -- set of normName
 
 -- Hover BodyPosition name
 local HOVER_BP_NAME = "AutoTeleport_HoverBP"
 
+--========================================================
 -- ===== Utils =====
+--========================================================
+
+-- Normalisasi nama → lowercase + hapus non-alfanumerik
 local function normName(s)
     s = string.lower(s or "")
     s = s:gsub("%W", "")
     return s
 end
 
+-- Tunggu child sampai ada
 local function waitChild(parent, name, timeout)
     local t0 = os.clock()
     local obj = parent:FindFirstChild(name)
@@ -51,6 +69,7 @@ local function waitChild(parent, name, timeout)
     return obj
 end
 
+-- Pastikan karakter siap
 local function ensureCharacter()
     local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
     local hrp  = char:FindFirstChild("HumanoidRootPart") or waitChild(char, "HumanoidRootPart", 5)
@@ -58,6 +77,7 @@ local function ensureCharacter()
     return char, hrp, hum
 end
 
+-- Set CFrame dengan aman
 local function setCFrameSafely(hrp, targetPos, keepLookAt)
     local look = keepLookAt or (hrp.CFrame.LookVector + hrp.Position)
     hrp.AssemblyLinearVelocity = Vector3.new()
@@ -65,20 +85,21 @@ local function setCFrameSafely(hrp, targetPos, keepLookAt)
     hrp.CFrame = CFrame.lookAt(targetPos, Vector3.new(look.X, targetPos.Y, look.Z))
 end
 
+--========================================================
 -- ===== Hover BodyPosition helpers =====
+--========================================================
+
 local function ensureHoverBP(hrp)
     if not hrp then return nil end
     local bp = hrp:FindFirstChild(HOVER_BP_NAME)
     if bp and bp:IsA("BodyPosition") then
         return bp
     end
-    -- Create BodyPosition
     bp = Instance.new("BodyPosition")
     bp.Name = HOVER_BP_NAME
-    -- Force should be large enough to counter gravity and small movements
     bp.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-    bp.P = 3e4   -- spring constant (higher -> stiffer)
-    bp.D = 1e3   -- damping
+    bp.P = 3e4
+    bp.D = 1e3
     bp.Parent = hrp
     return bp
 end
@@ -91,76 +112,59 @@ local function removeHoverBP(hrp)
     end
 end
 
+--========================================================
 -- ===== Smart water-finding helpers =====
+--========================================================
+
 local function findBestWaterPosition(centerPos)
-    -- Parameters (tweakable)
-    local maxRadius = 30           -- cari hingga radius ini (studs)
-    local radii = {0, 2, 4, 6, 10, 15, 20, 30} -- radius steps (center first)
-    local samplesPerRadius = 8     -- berapa sample per lingkaran (8 -> setiap 45°)
-    local rayUp = 60               -- start Y di atas pivot
-    local rayDown = 200            -- panjang ray ke bawah
+    local maxRadius = 30
+    local radii = {0, 2, 4, 6, 10, 15, 20, 30}
+    local samplesPerRadius = 8
+    local rayUp = 60
+    local rayDown = 200
     local best = nil
     local bestDist = math.huge
 
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Blacklist
-    -- blacklist karakter pemain supaya ray tidak kena character sendiri
     local char = LocalPlayer.Character
-    if char then
-        params.FilterDescendantsInstances = {char}
-    else
-        params.FilterDescendantsInstances = {}
-    end
+    params.FilterDescendantsInstances = char and {char} or {}
     params.IgnoreWater = false
 
     for _, r in ipairs(radii) do
         if r > maxRadius then break end
         local stepCount = (r == 0) and 1 or samplesPerRadius
         for i = 0, stepCount - 1 do
-            local offset = Vector3.new(0,0,0)
-            if r == 0 then
-                offset = Vector3.new(0,0,0)
-            else
-                local theta = (i / stepCount) * math.pi * 2
-                offset = Vector3.new(math.cos(theta) * r, 0, math.sin(theta) * r)
-            end
-
+            local offset = (r == 0) and Vector3.zero or Vector3.new(
+                math.cos((i / stepCount) * math.pi * 2) * r,
+                0,
+                math.sin((i / stepCount) * math.pi * 2) * r
+            )
             local origin = Vector3.new(centerPos.X + offset.X, centerPos.Y + rayUp, centerPos.Z + offset.Z)
             local direction = Vector3.new(0, -rayDown, 0)
             local result = Workspace:Raycast(origin, direction, params)
             if result and result.Position then
-                -- Prefer surfaces made of Water (Terrain or part material)
-                local mat = result.Material
-                if mat == Enum.Material.Water then
+                if result.Material == Enum.Material.Water then
                     local candidate = result.Position
                     local d = (Vector3.new(candidate.X, 0, candidate.Z) - Vector3.new(centerPos.X, 0, centerPos.Z)).Magnitude
                     if d < bestDist then
                         best = candidate
                         bestDist = d
                     end
-                else
-                    -- Kadang terrain water tidak set Material.Water on hit (rare) -> fallback check instance name/type
-                    local inst = result.Instance
-                    if inst and inst:IsA("Terrain") then
-                        -- Raycast on terrain should have Material.Water if it's water; keep earlier check
-                        -- no-op here
-                    end
                 end
             end
         end
-        -- jika sudah ada kandidat paling dekat (misal r==0 center), kita bisa return langsung
-        if best then
-            return best
-        end
+        if best then return best end
     end
-
-    -- jika tidak menemukan water sama sekali, fallback ke centerPos
     return centerPos
 end
 
--- ===== Save Position Before First Teleport =====
+--========================================================
+-- ===== Save Position Before Teleport =====
+--========================================================
+
 local function saveCurrentPosition()
-    if savedPosition then return end -- already saved
+    if savedPosition then return end
     local _, hrp = ensureCharacter()
     if hrp then
         savedPosition = hrp.CFrame
@@ -168,27 +172,36 @@ local function saveCurrentPosition()
     end
 end
 
--- ===== Index Events from ReplicatedStorage.Events =====
-local function indexEvents()
-    table.clear(validEventName)
-    if not eventsFolder then return end
-    local function scan(folder)
-        for _, child in ipairs(folder:GetChildren()) do
+--========================================================
+-- ===== Event Validation (ReplicatedStorage.Events) =====
+--========================================================
+
+local function buildValidEventNames()
+    local folder = ReplicatedStorage:FindFirstChild("Events")
+    if not folder then
+        warn("[AutoTeleportEvent] Tidak ada folder 'Events' di ReplicatedStorage")
+        return {}
+    end
+    local valid = {}
+    local function scan(f)
+        for _, child in ipairs(f:GetChildren()) do
             if child:IsA("ModuleScript") then
                 local ok, data = pcall(require, child)
-                if ok and type(data) == "table" and data.Name then
-                    validEventName[normName(data.Name)] = true
-                end
-                validEventName[normName(child.Name)] = true
+                local name = (ok and data and data.Name) or child.Name
+                valid[normName(name)] = true
             elseif child:IsA("Folder") then
                 scan(child)
             end
         end
     end
-    scan(eventsFolder)
+    scan(folder)
+    return valid
 end
 
--- ===== Resolve Model Pivot =====
+--========================================================
+-- ===== Model Pivot Resolver =====
+--========================================================
+
 local function resolveModelPivotPos(model)
     local ok, cf = pcall(function() return model:GetPivot() end)
     if ok and typeof(cf) == "CFrame" then return cf.Position end
@@ -197,42 +210,29 @@ local function resolveModelPivotPos(model)
     return nil
 end
 
-local function buildValidEventNames()
-    local eventsFolder = ReplicatedStorage:FindFirstChild("Events")
-    if not eventsFolder then
-        warn("[AutoTeleportEvent] Tidak ada folder 'Events' di ReplicatedStorage")
-        return {}
+--========================================================
+-- ===== Resolve EventName from Model =====
+--========================================================
+
+local function resolveEventNameFromModel(model)
+    if not model or not model.Name then return "Unknown" end
+    local name = model.Name
+    local sv = model:FindFirstChild("EventName")
+    if sv and sv:IsA("StringValue") and sv.Value ~= "" then
+        name = sv.Value
+    elseif model:GetAttribute("EventName") then
+        name = model:GetAttribute("EventName")
     end
-
-    local valid = {}
-
-    local function scan(folder)
-        for _, child in ipairs(folder:GetChildren()) do
-            if child:IsA("ModuleScript") then
-                local ok, data = pcall(require, child)
-                local name = nil
-                if ok and data and data.Name then
-                    name = data.Name
-                else
-                    name = child.Name
-                end
-                valid[normName(name)] = true
-            elseif child:IsA("Folder") then
-                scan(child)
-            end
-        end
-    end
-
-    scan(eventsFolder)
-    return valid
+    return name
 end
 
+--========================================================
+-- ===== Scan Active Props in Workspace =====
+--========================================================
 
--- ===== Scan All Props in Workspace =====
 local function scanAllActiveProps()
     local activePropsList = {}
-    local validEventName = buildValidEventNames() -- sudah ada kan di sistem kamu
-
+    local validEventName = buildValidEventNames()
     for _, child in ipairs(Workspace:GetChildren()) do
         if child:IsA("Model") or child:IsA("Folder") then
             if string.find(string.lower(child.Name), "props") then
@@ -241,7 +241,6 @@ local function scanAllActiveProps()
                         local eventName = resolveEventNameFromModel(desc)
                         local normKey = normName(eventName)
                         local pos = resolveModelPivotPos(desc)
-
                         if pos then
                             if validEventName[normKey] then
                                 table.insert(activePropsList, {
@@ -251,15 +250,11 @@ local function scanAllActiveProps()
                                     pos       = pos,
                                     propsName = child.Name
                                 })
-                                print(string.format(
-                                    "[AutoTeleportEvent] Event VALID: %s @ Vector3(%.2f, %.2f, %.2f)",
-                                    eventName, pos.X, pos.Y, pos.Z
-                                ))
+                                print(string.format("[AutoTeleportEvent] Event VALID: %s @ (%.2f, %.2f, %.2f)",
+                                    eventName, pos.X, pos.Y, pos.Z))
                             else
-                                warn(string.format(
-                                    "[AutoTeleportEvent] Event di Props '%s' → '%s' tidak cocok daftar resmi",
-                                    desc.Name, eventName
-                                ))
+                                warn(string.format("[AutoTeleportEvent] Event '%s' dari Props '%s' tidak valid",
+                                    eventName, child.Name))
                             end
                         end
                     end
@@ -267,29 +262,25 @@ local function scanAllActiveProps()
             end
         end
     end
-
     return activePropsList
 end
 
--- ===== Match terhadap pilihan user =====
-local function matchesSelection(nameKey)
-    -- Jika user tidak memberikan priorityList dan set kosong -> semua diizinkan
-    if #selectedPriorityList == 0 and next(selectedSet) == nil then return true end
+--========================================================
+-- ===== Selection / Ranking =====
+--========================================================
 
-    -- cek selectedSet (fast)
+local function matchesSelection(nameKey)
+    if #selectedPriorityList == 0 and next(selectedSet) == nil then return true end
     for selKey, _ in pairs(selectedSet) do
         if nameKey:find(selKey, 1, true) or selKey:find(nameKey, 1, true) then
             return true
         end
     end
-
-    -- cek priority list (ordered)
     for _, selKey in ipairs(selectedPriorityList) do
         if nameKey:find(selKey, 1, true) or selKey:find(nameKey, 1, true) then
             return true
         end
     end
-
     return false
 end
 
@@ -302,12 +293,13 @@ local function rankOf(nameKey)
     return math.huge
 end
 
--- ===== Choose Best =====
+--========================================================
+-- ===== Choose Best Event =====
+--========================================================
+
 local function chooseBestActiveEvent()
     local actives = scanAllActiveProps()
     if #actives == 0 then return nil end
-
-    -- filter sesuai pilihan user jika ada
     local filtered = {}
     if #selectedPriorityList > 0 or next(selectedSet) ~= nil then
         for _, a in ipairs(actives) do
@@ -316,61 +308,39 @@ local function chooseBestActiveEvent()
             end
         end
         actives = filtered
-        if #actives == 0 then
-            -- tidak ada event TERPILIH yang aktif -> jangan teleport ke event lain
-            return nil
-        end
+        if #actives == 0 then return nil end
     end
-
-    for _, a in ipairs(actives) do
-        a.rank = rankOf(a.nameKey)
-    end
-
+    for _, a in ipairs(actives) do a.rank = rankOf(a.nameKey) end
     table.sort(actives, function(a, b)
         if a.rank ~= b.rank then return a.rank < b.rank end
-        -- stabil
         return a.name < b.name
     end)
-
     return actives[1]
 end
 
--- ===== Teleport / Return =====
-local function teleportToTarget(target)
-    local char, hrp, hum = ensureCharacter()
-    if not hrp then return false, "NO_HRP" end
-    
-    -- Save position before first teleport
-    saveCurrentPosition()
+--========================================================
+-- ===== Teleport / Restore =====
+--========================================================
 
-    -- Find best water position (or fallback to pivot)
+local function teleportToTarget(target)
+    local char, hrp = ensureCharacter()
+    if not hrp then return false, "NO_HRP" end
+    saveCurrentPosition()
     local landing = findBestWaterPosition(target.pos)
     local tpPos = landing + Vector3.new(0, hoverHeight, 0)
-
-    -- Instant teleport once
     setCFrameSafely(hrp, tpPos)
-    -- Ensure we have a BodyPosition to maintain hover smoothly
     local bp = ensureHoverBP(hrp)
-    if bp then
-        bp.Position = tpPos
-    end
-
+    if bp then bp.Position = tpPos end
     print("[AutoTeleportEvent] Teleported to:", target.name, "at", tostring(landing))
     return true
 end
 
 local function restoreToSavedPosition()
-    if not savedPosition then 
-        print("[AutoTeleportEvent] No saved position to restore")
-        return 
-    end
-    
-    local char, hrp, hum = ensureCharacter()
+    if not savedPosition then return end
+    local _, hrp = ensureCharacter()
     if hrp then
-        -- remove any hover BP so player regains normal physics
         removeHoverBP(hrp)
         setCFrameSafely(hrp, savedPosition.Position, savedPosition.Position + savedPosition.LookVector)
-        -- reset velocities just in case
         hrp.AssemblyLinearVelocity = Vector3.new()
         hrp.AssemblyAngularVelocity = Vector3.new()
         print("[AutoTeleportEvent] Restored to saved position:", tostring(savedPosition.Position))
@@ -378,174 +348,137 @@ local function restoreToSavedPosition()
 end
 
 local function maintainHover()
-    local char, hrp, hum = ensureCharacter()
+    local _, hrp = ensureCharacter()
     if hrp and currentTarget then
-        -- Check if target still exists
         if not currentTarget.model or not currentTarget.model.Parent then
-            print("[AutoTeleportEvent] Current target no longer exists, clearing")
+            print("[AutoTeleportEvent] Current target gone → clear")
             currentTarget = nil
-            -- remove BP
             removeHoverBP(hrp)
             return
         end
-        
         local desired = currentTarget.pos + Vector3.new(0, hoverHeight, 0)
-        -- Use BodyPosition to maintain hover smoothly
         local bp = ensureHoverBP(hrp)
         if bp then
             bp.Position = desired
-        else
-            -- Fallback: if BP couldn't be created, do occasional setCFrame
-            if (hrp.Position - desired).Magnitude > 5 then
-                setCFrameSafely(hrp, desired)
-            end
+        elseif (hrp.Position - desired).Magnitude > 5 then
+            setCFrameSafely(hrp, desired)
         end
-
-        -- Small velocity reset when close to desired to avoid micro jitter
         if (hrp.Position - desired).Magnitude <= 1.2 then
             hrp.AssemblyLinearVelocity = Vector3.new()
             hrp.AssemblyAngularVelocity = Vector3.new()
         end
-    else
-        -- No current target -> ensure no hover BP remains
-        if hrp then
-            removeHoverBP(hrp)
-        end
+    elseif hrp then
+        removeHoverBP(hrp)
     end
 end
 
+--========================================================
 -- ===== Track Active Props =====
+--========================================================
+
 local function updateActivePropsTracking()
     local newActiveProps = {}
     local activeEvents = scanAllActiveProps()
-    
     for _, event in ipairs(activeEvents) do
         newActiveProps[event.propsName] = true
     end
-    
-    -- Check for removed props
     for propsName, _ in pairs(lastKnownActiveProps) do
         if not newActiveProps[propsName] then
             print("[AutoTeleportEvent] Props removed:", propsName)
-            -- If current target was from this props, clear it
             if currentTarget and currentTarget.propsName == propsName then
-                print("[AutoTeleportEvent] Current target props removed, clearing target")
+                print("[AutoTeleportEvent] Clearing target due to props removal")
                 currentTarget = nil
-                -- also remove BP from character
                 local _, hrp = ensureCharacter()
                 if hrp then removeHoverBP(hrp) end
             end
         end
     end
-    
     lastKnownActiveProps = newActiveProps
 end
 
+--========================================================
 -- ===== Loop =====
+--========================================================
+
 local function startLoop()
     if hbConn then hbConn:Disconnect() end
     local lastTick = 0
     hbConn = RunService.Heartbeat:Connect(function()
         if not running then return end
-        local now = os.clock()
-        
-        -- Maintain hover more frequently (every heartbeat)
         maintainHover()
-        
-        if now - lastTick < 0.3 then -- throttle main logic
-            return
-        end
+        local now = os.clock()
+        if now - lastTick < 0.3 then return end
         lastTick = now
-
-        -- Update tracking and scan for events
         updateActivePropsTracking()
         local best = chooseBestActiveEvent()
-
         if not best then
-            -- tidak ada event terpilih (atau tidak ada event sama sekali)
             if currentTarget then
-                print("[AutoTeleportEvent] No valid events found, clearing current target")
+                print("[AutoTeleportEvent] No valid events, clearing target")
                 currentTarget = nil
             end
-            -- Always return to saved position when no valid events
             restoreToSavedPosition()
             return
         end
-
-        -- Check if we need to switch targets (compare by instance and propsName)
         if (not currentTarget) or (currentTarget.model ~= best.model) or (currentTarget.propsName ~= best.propsName) then
-            print("[AutoTeleportEvent] Switching to new target:", best.name)
+            print("[AutoTeleportEvent] Switching target →", best.name)
             teleportToTarget(best)
             currentTarget = best
         end
     end)
 end
 
--- ===== Setup Workspace Monitoring =====
+--========================================================
+-- ===== Workspace Monitoring =====
+--========================================================
+
 local function setupWorkspaceMonitoring()
-    -- Clean up existing connections
     if propsAddedConn then propsAddedConn:Disconnect() end
     if propsRemovedConn then propsRemovedConn:Disconnect() end
     if workspaceConn then workspaceConn:Disconnect() end
-    
-    -- Monitor for new Props being added
     propsAddedConn = Workspace.ChildAdded:Connect(function(child)
-        if child.Name == "Props" or child.Name:find("Props") then
+        if child.Name:lower():find("props") then
             print("[AutoTeleportEvent] New Props detected:", child.Name)
-            task.wait(0.5) -- Wait a bit for props to be fully loaded
-            -- Force immediate scan on next loop iteration
+            task.wait(0.5)
         end
     end)
-    
-    -- Monitor for Props being removed
     propsRemovedConn = Workspace.ChildRemoved:Connect(function(child)
-        if child.Name == "Props" or child.Name:find("Props") then
+        if child.Name:lower():find("props") then
             print("[AutoTeleportEvent] Props removed:", child.Name)
-            -- Update tracking immediately
             if lastKnownActiveProps[child.Name] then
                 lastKnownActiveProps[child.Name] = nil
                 if currentTarget and currentTarget.propsName == child.Name then
-                    print("[AutoTeleportEvent] Current target props removed")
                     currentTarget = nil
-                    -- remove hover BP
                     local _, hrp = ensureCharacter()
                     if hrp then removeHoverBP(hrp) end
                 end
             end
         end
     end)
-    
-    -- General workspace monitoring for any changes
     workspaceConn = Workspace.DescendantAdded:Connect(function(desc)
-        if desc:IsA("Model") and desc.Parent and (desc.Parent.Name == "Props" or desc.Parent.Name:find("Props")) then
-            -- New event model added
-            task.wait(0.1) -- Small delay to let it fully load
+        if desc:IsA("Model") and desc.Parent and desc.Parent.Name:lower():find("props") then
+            task.wait(0.1)
         end
     end)
 end
 
+--========================================================
 -- ===== Lifecycle =====
+--========================================================
+
 function AutoTeleportEvent:Init(gui)
     eventsFolder = ReplicatedStorage:FindFirstChild("Events") or waitChild(ReplicatedStorage, "Events", 5)
-    indexEvents()
-
+    validEventName = buildValidEventNames()
     if charConn then charConn:Disconnect() end
     charConn = LocalPlayer.CharacterAdded:Connect(function()
-        -- Reset saved position on character respawn
         savedPosition = nil
         if running and currentTarget then
             task.defer(function()
-                task.wait(0.5) -- Wait for character to fully load
-                -- Re-save position and teleport if we have a target
-                if currentTarget then
-                    teleportToTarget(currentTarget)
-                end
+                task.wait(0.5)
+                if currentTarget then teleportToTarget(currentTarget) end
             end)
         end
     end)
-
     setupWorkspaceMonitoring()
-    
     print("[AutoTeleportEvent] Initialized successfully")
     return true
 end
@@ -553,7 +486,6 @@ end
 function AutoTeleportEvent:Start(config)
     if running then return true end
     running = true
-
     if config then
         if type(config.hoverHeight) == "number" then
             hoverHeight = math.clamp(config.hoverHeight, 5, 100)
@@ -562,129 +494,69 @@ function AutoTeleportEvent:Start(config)
             self:SetSelectedEvents(config.selectedEvents)
         end
     end
-
-    -- Reset state
     currentTarget = nil
     savedPosition = nil
     table.clear(lastKnownActiveProps)
-    
     print("[AutoTeleportEvent] Starting with events:", table.concat(selectedPriorityList, ", "))
-    
-    -- Try to find and teleport to initial target
     local best = chooseBestActiveEvent()
     if best then
         teleportToTarget(best)
         currentTarget = best
-        print("[AutoTeleportEvent] Initial target found:", best.name)
     else
-        print("[AutoTeleportEvent] No initial target found")
+        print("[AutoTeleportEvent] No valid events found")
     end
-
     startLoop()
-    print("[AutoTeleportEvent] Started successfully")
     return true
 end
 
 function AutoTeleportEvent:Stop()
-    if not running then return true end
+    if not running then return end
     running = false
-    
-    if hbConn then hbConn:Disconnect(); hbConn = nil end
+    if hbConn then hbConn:Disconnect() hbConn = nil end
+    if propsAddedConn then propsAddedConn:Disconnect() propsAddedConn = nil end
+    if propsRemovedConn then propsRemovedConn:Disconnect() propsRemovedConn = nil end
+    if workspaceConn then workspaceConn:Disconnect() workspaceConn = nil end
+    if charConn then charConn:Disconnect() charConn = nil end
+    restoreToSavedPosition()
+    print("[AutoTeleportEvent] Stopped")
+end
 
-    -- Always restore to saved position when stopping
-    if savedPosition then
-        restoreToSavedPosition()
-    else
-        -- remove BP if any
-        local _, hrp = ensureCharacter()
-        if hrp then removeHoverBP(hrp) end
+function AutoTeleportEvent:SetSelectedEvents(names)
+    local list = {}
+    local set  = {}
+    if type(names) == "table" then
+        for _, n in ipairs(names) do
+            local key = normName(n)
+            if key ~= "" then
+                table.insert(list, key)
+                set[key] = true
+            end
+        end
+    elseif type(names) == "string" then
+        local key = normName(names)
+        if key ~= "" then
+            table.insert(list, key)
+            set[key] = true
+        end
     end
-    
-    currentTarget = nil
-    table.clear(lastKnownActiveProps)
-    print("[AutoTeleportEvent] Stopped and restored position")
-    return true
+    selectedPriorityList = list
+    selectedSet          = set
+    print("[AutoTeleportEvent] Selected events set to:", table.concat(selectedPriorityList, ", "))
 end
 
 function AutoTeleportEvent:Cleanup()
     self:Stop()
-    if charConn         then charConn:Disconnect();         charConn = nil end
-    if propsAddedConn   then propsAddedConn:Disconnect();   propsAddedConn = nil end
-    if propsRemovedConn then propsRemovedConn:Disconnect(); propsRemovedConn = nil end
-    if workspaceConn    then workspaceConn:Disconnect();    workspaceConn = nil end
-    
     eventsFolder = nil
-    table.clear(validEventName)
+    currentTarget = nil
+    validEventName = {}
+    savedPosition = nil
     table.clear(selectedPriorityList)
     table.clear(selectedSet)
     table.clear(lastKnownActiveProps)
-    savedPosition = nil
-    currentTarget = nil
-    
-    print("[AutoTeleportEvent] Cleanup completed")
-    return true
+    print("[AutoTeleportEvent] Cleanup done")
 end
 
--- ===== Setters =====
-function AutoTeleportEvent:SetSelectedEvents(selected)
-    table.clear(selectedPriorityList)
-    table.clear(selectedSet)
-
-    if type(selected) == "table" then
-        if #selected > 0 then
-            -- ARRAY: pertahankan urutan prioritas
-            for _, v in ipairs(selected) do
-                local key = normName(v)
-                table.insert(selectedPriorityList, key)
-                selectedSet[key] = true
-            end
-            print("[AutoTeleportEvent] Priority events set:", table.concat(selectedPriorityList, ", "))
-        else
-            -- DICT/SET: tanpa urutan → pakai set saja
-            for k, on in pairs(selected) do
-                if on then
-                    local key = normName(k)
-                    selectedSet[key] = true
-                end
-            end
-        end
-    end
-    return true
-end
-
-function AutoTeleportEvent:SetHoverHeight(h)
-    if type(h) == "number" then
-        hoverHeight = math.clamp(h, 5, 100)
-        if running and currentTarget then
-            local _, hrp = ensureCharacter()
-            if hrp then
-                local desired = currentTarget.pos + Vector3.new(0, hoverHeight, 0)
-                local bp = ensureHoverBP(hrp)
-                if bp then
-                    bp.Position = desired
-                else
-                    setCFrameSafely(hrp, desired)
-                end
-            end
-        end
-        return true
-    end
-    return false
-end
-
-function AutoTeleportEvent:Status()
-    return {
-        running     = running,
-        hover       = hoverHeight,
-        hasSavedPos = savedPosition ~= nil,
-        target      = currentTarget and currentTarget.name or nil,
-        activeProps = lastKnownActiveProps
-    }
-end
-
-function AutoTeleportEvent.new()
-    local self = setmetatable({}, AutoTeleportEvent)
-    return self
-end
-
+--========================================================
+-- Export
+--========================================================
 return AutoTeleportEvent
