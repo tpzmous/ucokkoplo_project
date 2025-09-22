@@ -7,6 +7,13 @@
 local FishWebhookFeature = {}
 FishWebhookFeature.__index = FishWebhookFeature
 
+local logger = _G.Logger and _G.Logger.new("FishWebhook") or {
+    debug = function() end,
+    info = function() end,
+    warn = function() end,
+    error = function() end
+}
+
 -- Services
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -613,6 +620,16 @@ local function sendEmbed(info, origin)
         log("Image URL:", tostring(imageUrl)) 
     end
 
+local EMOJI = {
+    fish     = "<:emoji_1:1415617268511150130>",
+    weight   = "<:emoji_2:1415617300098449419>",
+    chance   = "<:emoji_3:1415617326316916787>",
+    rarity   = "<:emoji_4:1415617353898790993>",
+    mutation = "<:emoji_5:1415617377424511027>"
+}
+
+local function label(icon, text) return string.format("%s %s", icon or "", text or "") end
+
     -- Create "box" formatting for Discord embed (inline code)
     local function box(v)
         v = v == nil and "Unknown" or tostring(v)
@@ -622,23 +639,22 @@ local function sendEmbed(info, origin)
 
     local function hide(v)
     v = v == nil and "Unknown" or tostring(v)
-    v = v:gsub("||", "|​|") -- Add zero-width space to prevent breaking
+    v = v:gsub("||", "||") -- Add zero-width space to prevent breaking
     return string.format("||%s||", v)
     end
 
-    -- UPDATED: Enhanced embed with new data
+        -- UPDATED: Enhanced embed with new data
     local embed = {
-        title = (info.shiny and "✨ " or "🎣 ") .. "New Catch ",
+        title = (info.shiny and " " or " ") .. "New Catch ",
         description = string.format("**Player:** %s", hide(LocalPlayer.Name)),
-        color = info.shiny and 0xFFD700 or 0x87CEEB, -- Gold for shiny, light blue for normal
+        color = info.shiny and 0xFFD700 or 0x030303, -- Gold for shiny, light blue for normal
         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        footer = { text = ".devlogic | Fish-It Notifier" },
-        fields = {
-            { name = "Fish Name 🐟",   value = box(fishName),                              inline = false },
-            { name = "⚖️ Weight",      value = box(toKg(info.weight)),                     inline = true  },
-            { name = "🎲 Chance",       value = box(fmtChanceOneInFromNumber(info.chance)), inline = true  },
-            { name = "💎 Rarity",       value = box(getTierName(info.tier)),                inline = true  },
-            { name = "🧬 Mutation",      value = box(formatVariant(info)),                   inline = false },
+        footer = { text = "NoctisHub | Fish-It Notifier" },fields = {
+            { name = label(EMOJI.fish, "Fish Name"),  value = box(fishName),                   inline = false },
+            { name = label(EMOJI.weight, "Weight"),   value = box(toKg(info.weight)),                           inline = true  },
+            { name = label(EMOJI.chance, "Chance"),   value = box(fmtChanceOneInFromNumber(info.chance)),                        inline = true  },
+            { name = label(EMOJI.rarity, "Rarity"),   value = box(getTierName(info.tier)),                         inline = true  },
+            { name = label(EMOJI.mutation, "Mutation"), value = box(formatVariant(info)),      inline = false },
         }
     }
 
@@ -656,7 +672,7 @@ local function sendEmbed(info, origin)
     end
     
     sendWebhook({ 
-        username = ".devlogic ", 
+        username = "Noctis Notifier ", 
         embeds = {embed} 
     })
     
@@ -819,7 +835,7 @@ function FishWebhookFeature:Init(guiControls)
     detectItemsRoot()
     buildLightIndex()
     
-    print("[FishWebhook] Initialized with new detector (RE/ObtainedNewFishNotification)")
+    logger:info("Initialized with new detector (RE/ObtainedNewFishNotification)")
     return true
 end
 
@@ -830,7 +846,7 @@ function FishWebhookFeature:Start(config)
     selectedFishTypes = config.selectedFishTypes or {}
     
     if not webhookUrl or webhookUrl == "" then
-        warn("[FishWebhook] Cannot start - webhook URL not set")
+        logger:warn("Cannot start - webhook URL not set")
         return false
     end
     
@@ -840,9 +856,9 @@ function FishWebhookFeature:Start(config)
     connectLeaderstatsTrigger()
     connectBackpackLight()
     
-    print("[FishWebhook] Started with URL:", webhookUrl:sub(1, 50) .. "...")
-    print("[FishWebhook] Selected fish types:", HttpService:JSONEncode(selectedFishTypes))
-    print("[FishWebhook] Using detector: RE/ObtainedNewFishNotification")
+    logger:info("Started with URL:", webhookUrl:sub(1, 50) .. "...")
+    logger:info("Selected fish types:", HttpService:JSONEncode(selectedFishTypes))
+    logger:info("Using detector: RE/ObtainedNewFishNotification")
     
     return true
 end
@@ -863,7 +879,7 @@ function FishWebhookFeature:Stop()
     safeClear(recentAdds)
     rareWatchUntil = 0
     
-    print("[FishWebhook] Stopped")
+    logger:info("Stopped")
 end
 
 function FishWebhookFeature:SetWebhookUrl(url)
@@ -878,7 +894,7 @@ end
 
 function FishWebhookFeature:TestWebhook(message)
     if not webhookUrl or webhookUrl == "" then
-        warn("[FishWebhook] Cannot test - webhook URL not set")
+        logger:warn("Cannot test - webhook URL not set")
         return false
     end
     
@@ -902,7 +918,7 @@ function FishWebhookFeature:GetStatus()
 end
 
 function FishWebhookFeature:Cleanup()
-    print("[FishWebhook] Cleaning up...")
+    logger:info("Cleaning up...")
     self:Stop()
     controls = {}
     
