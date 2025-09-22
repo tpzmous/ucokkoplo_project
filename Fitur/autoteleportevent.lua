@@ -205,52 +205,36 @@ local function scanAllActiveProps()
         if child:IsA("Model") or child:IsA("Folder") then
             local childName = child.Name
             if childName == "Props" or childName:find("Props") then
-                -- Scan semua isi Props
                 for _, desc in ipairs(child:GetDescendants()) do
                     if desc:IsA("Model") then
-                        local model = desc
+                        -- ambil nama event
+                        local eventName = desc:GetAttribute("EventName")
 
-                        -- Cari nama event yang lebih “asli”
-                        local eventName
-                        if model:GetAttribute("EventName") then
-                            eventName = model:GetAttribute("EventName")
-                        else
-                            for _, v in ipairs(model:GetChildren()) do
+                        if not eventName then
+                            for _, v in ipairs(desc:GetChildren()) do
                                 if v:IsA("StringValue") or v:IsA("ValueBase") then
                                     eventName = v.Value
                                     break
                                 end
                             end
                         end
-                        eventName = eventName or model.Name
-                        local mKey = normName(eventName)
-                        local pKey = model.Parent and normName(model.Parent.Name) or nil
 
-                        -- Cek apakah sesuai daftar event
-                        local isEventish =
-                            (validEventName[mKey] == true) or
-                            (pKey and validEventName[pKey] == true)
-
-                        -- Fallback: kalau model punya EventName tapi tidak ada di daftar, tetap dianggap event
-                        if not isEventish and eventName and eventName ~= model.Name then
-                            isEventish = true
+                        if not eventName then
+                            eventName = desc.Name
                         end
 
-                        if isEventish then
-                            local pos = resolveModelPivotPos(model)
-                            if pos then
-                                local repName = eventName or (model.Parent and model.Parent.Name) or model.Name
-                                table.insert(activePropsList, {
-                                    model     = model,
-                                    name      = repName,
-                                    nameKey   = normName(repName),
-                                    pos       = pos,
-                                    propsName = childName
-                                })
-                                -- Debug opsional
-                                print(string.format("[DEBUG] Event terdeteksi: %s @ (%.1f, %.1f, %.1f)",
-                                    repName, pos.X, pos.Y, pos.Z))
-                            end
+                        -- posisi pivot
+                        local ok, pos = pcall(function()
+                            return desc:GetPivot().Position
+                        end)
+
+                        if ok and pos then
+                            table.insert(activePropsList, {
+                                model     = desc,
+                                name      = eventName,
+                                pos       = pos,
+                                propsName = childName
+                            })
                         end
                     end
                 end
