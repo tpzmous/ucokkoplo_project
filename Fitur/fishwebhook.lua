@@ -899,7 +899,7 @@ function FishWebhookFeature:TestWebhook(message)
     end
     
     sendWebhook({ 
-        username = ".devlogic Fish Notifier v2", 
+        username = "INFO!!!", 
         content = message or "🐟 Webhook test from Fish-It script (Updated Detector)" 
     })
     return true
