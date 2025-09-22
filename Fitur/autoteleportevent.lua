@@ -229,7 +229,6 @@ local function scanAllActiveProps()
                                 pos       = pos,
                                 propsName = "Props"
                             })
-                            print(string.format("[AutoTeleportEvent] Found Event: %s @ %s", evt.Name, tostring(pos)))
                         end
                     end
                 end
