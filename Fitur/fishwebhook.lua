@@ -344,20 +344,20 @@ end
 local function decode_RE_ObtainedNewFishNotification(packed)
     local info = {}
     
-    [[-- Berdasarkan gambar debug, args biasanya berisi:
+    -- Berdasarkan gambar debug, args biasanya berisi:
     -- args[1] = table dengan data ikan (Shiny, Weight, VariantSeed, VariantId, dll)
     -- args[2] = mungkin additional data atau InventoryItem
     -- args[3] = ItemId
     -- args[4] = possibly more metadata
     
     if CONFIG.DEBUG then
-        log("Decoding ObtainedNewFishNotification with", packed.n or #packed, "args")
+     --log("Decoding ObtainedNewFishNotification with", packed.n or #packed, "args")
         for i = 1, math.min(packed.n or #packed, 4) do
             if packed[i] then
-                log("  arg[" .. i .. "]:", type(packed[i]))
+                --log("  arg[" .. i .. "]:", type(packed[i]))
             end
         end
-    end]]
+    end
     
     -- Process each argument
     for i = 1, packed.n or #packed do
