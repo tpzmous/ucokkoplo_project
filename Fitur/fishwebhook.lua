@@ -344,7 +344,7 @@ end
 local function decode_RE_ObtainedNewFishNotification(packed)
     local info = {}
     
-    -- Berdasarkan gambar debug, args biasanya berisi:
+    [[-- Berdasarkan gambar debug, args biasanya berisi:
     -- args[1] = table dengan data ikan (Shiny, Weight, VariantSeed, VariantId, dll)
     -- args[2] = mungkin additional data atau InventoryItem
     -- args[3] = ItemId
@@ -357,7 +357,7 @@ local function decode_RE_ObtainedNewFishNotification(packed)
                 log("  arg[" .. i .. "]:", type(packed[i]))
             end
         end
-    end
+    end]]
     
     -- Process each argument
     for i = 1, packed.n or #packed do
